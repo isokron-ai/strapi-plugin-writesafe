@@ -71,11 +71,12 @@ function RequestCard({ r, me, meInfo, busy, onDecide }) {
   const approvals = r.decisions.filter((d) => d.decision === 'approve');
   const mine = r.decisions.find((d) => String(d.approver_id) === String(me));
   const what = r.action === 'publish' ? 'Publish' : (r.tool === 'ws_replace' ? 'Find and replace' : 'Patch');
+  const andPublish = r.action !== 'publish' && r.spec && r.spec.publish === 'if_clean' ? ' and publish (if clean)' : '';
   const reason = { count: 'Above the automatic limit', publish: 'Bulk publish needs approval', relations: 'Relation edit needs approval' }[r.reason] || r.reason;
   return h(Box, { background: 'neutral0', shadow: 'tableShadow', hasRadius: true, padding: 6, 'data-testid': 'approval-card' },
     h(Flex, { justifyContent: 'space-between', alignItems: 'flex-start', gap: 4, wrap: 'wrap' },
       h(Box, { style: { minWidth: 0 } },
-        h(Typography, { variant: 'delta', tag: 'h3' }, `${what} ${r.count.toLocaleString()} documents`),
+        h(Typography, { variant: 'delta', tag: 'h3' }, `${what} ${r.count.toLocaleString()} documents${andPublish}`),
         h(Typography, { variant: 'pi', textColor: 'neutral600', tag: 'p', style: { overflowWrap: 'anywhere' } }, `${r.uid}${r.locale ? ` · ${r.locale}` : ''} · ${reason}`)),
       h(Flex, { gap: 2, wrap: 'wrap' },
         h(Badge, { variant: r.approvals_needed === 2 ? 'danger' : 'secondary', size: 'S' }, r.approvals_needed === 2 ? 'Two different admins' : 'One admin'),

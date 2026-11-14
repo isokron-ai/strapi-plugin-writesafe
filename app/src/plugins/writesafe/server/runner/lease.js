@@ -2,30 +2,7 @@
 
 /**
  * Job leases for the in-Strapi runner (1.0 hardening, Phase 4 stream G).
- *
- * One lease row per job the runner owns (table writesafe_job_leases). A worker may run chunks of a job only while it
- * holds the lease: leaseOwner = its worker id, leaseUntil in the future, and the fence it got when it acquired.
- *  - acquire: one conditional UPDATE (no owner, or the lease has expired) that also increments `fence`; the database
- *    decides which of several replicas wins.
- *  - renew (heartbeat): the same row, only while owner and fence still match. An expired lease nobody took over is
- *    still the worker's: the fence, not the clock, says who holds it (review finding 11).
- *  - check: called inside every chunk's transaction (after the job row is locked): owner and fence must still match,
- *    so a worker whose lease was taken over (a long GC pause, a frozen container) writes nothing: its chunk rolls back.
- *    The check is a locking read of the lease row (on MySQL a plain read there would fix the snapshot before the
- *    document rows are locked), so a heartbeat waits for the running chunk; since expiry alone never takes a lease
- *    away from its owner, a chunk longer than the heartbeat costs nothing but a delayed renew. Others can take the
- *    lease only after leaseMs without any renew, so a chunk must stay well under leaseMs: the runner does not start when
- *    leaseMs is below 3 x the chunk time cap (bulk.chunkTimeMs from stream B, taken as 1 s until then; control.js).
- * A crashed worker simply stops renewing; after leaseMs another worker (or the restarted process) acquires the lease
- * with a higher fence and resumes from the job's last committed cursor.
- *
- * Times are epoch milliseconds from the worker's clock: replicas need synchronised clocks (NTP); leaseMs (60 s by
- * default) is the tolerance.
- *
- * Store contract (SQL: ./store.js; memory: below):
- *   insert(row), get(jobId), list(where), candidates(now, limit) -> rows runnable now,
- *   tryAcquire(jobId, worker, now, until) -> row | null (not before nextAttemptAt), renew(jobId, worker, fence, until, now) -> bool,
- *   release(jobId, worker, fence, patch) -> bool, update(jobId, patch, expect) -> bool, assertHeld(jobId, worker, fence) -> bool
+ * Design notes: docs/internals.md, section "server/runner/lease.js".
  */
 const RUNNABLE = ['queued', 'running'];
 

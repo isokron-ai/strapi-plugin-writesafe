@@ -190,7 +190,8 @@ def bulk(prefix, **kw):
 
 
 def status(job, who=None):
-    return ws("ws_bulk", {"job_id": job, "status_only": True}, who)[1]
+    """ws_job {action: "status"} (phase 4: status_only moved there from ws_bulk / ws_replace)."""
+    return ws("ws_job", {"action": "status", "job_id": job}, who)[1]
 
 
 def wait_for(fn, timeout=60, every=0.5):
@@ -696,7 +697,7 @@ def t_filter_too_long():
     check("a request whose filter is over the stored limit is refused (filter_too_long), nothing stored", e and code(r) == "filter_too_long" and "padded" not in summaries(pre), r)
 
 def gone_job(job, who=None):
-    e, r = ws("ws_bulk", {"job_id": job, "status_only": True}, who)
+    e, r = ws("ws_job", {"action": "status", "job_id": job}, who)
     return e and code(r) == "not_found"
 
 

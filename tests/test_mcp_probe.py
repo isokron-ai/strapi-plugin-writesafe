@@ -34,7 +34,7 @@ def main():
         "hide": "are not offered for these types",
     }[MODE]
     check("instructions describe this mode's built-in tools", mode_line in ins, ins)
-    for m, tool in (("create", "ws_create"), ("delete", "ws_delete"), ("localize", "ws_localize"), ("media", "ws_media_import"), ("bulk", "ws_bulk")):
+    for m, tool in (("create", "ws_create"), ("delete", "ws_delete"), ("localize", "ws_localize"), ("media", "ws_media_import"), ("bulk", "ws_bulk"), ("bulk", "ws_job")):
         if m in MODULES:
             check("instructions name %s (module %s on)" % (tool, m), tool in ins, ins)
 

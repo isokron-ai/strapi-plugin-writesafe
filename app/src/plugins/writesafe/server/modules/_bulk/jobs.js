@@ -3,37 +3,7 @@
 /**
  * ws_bulk: one patch or publish over every document that matches a filter, as a resumable job. ws_replace runs on the
  * same engine (registerAction).
- *
- * Flow (1.0 hardening items 17-19, 22, 23):
- *  1. dry_run: match the filter (checked against the token's read permission and narrowed by its update or publish
- *     conditions), refuse more than the ceiling (bulk.maxDocuments, 5,000 by default, at most 100,000), preview a
- *     spread of the matches (first, ..., last: written for real and rolled back), and return a PLAN TOKEN
- *     (plan.js): a full-length HMAC over the token owner, uid, locale, canonical filter, action and spec hash, count,
- *     the hash of the matched id list (for publish: with each draft's version), `undoable` and an expiry (15 min).
- *     ws_bulk needs a filter (`filter_required`) unless allow_all: true. The dry run also says how many webhook/entry
- *     events the job will fire and whether it can be undone.
- *  2. Start: the same call without dry_run, with plan_token. The token must be valid for this exact request and token
- *     holder (plan_mismatch), unexpired (plan_expired), and the matches now must be exactly the planned set
- *     (plan_mismatch, reason "matches"). The job id is derived from the token, so sending the same start again (after
- *     a lost reply) resumes that job instead of starting another. One job per token and content type may be active
- *     (job_running). The id snapshot is written ONCE, as rows (store.js); the job row keeps a cursor and counters.
- *     Documents created or moved into the filter after the plan are never touched; the end report counts them
- *     (`reconcile.still_matching`, `late_matches`).
- *  3. Chunks: each chunk is ONE transaction: lock the job row, lock the chunk's documents before the first read, then
- *     per document: read it, check it still matches the filter, take its version at that moment (publish: the version
- *     the plan bound; a newer draft is a `conflict` for that document, never published), write with that version as
- *     the precondition. Each document runs in a savepoint (item 22): a failing one is rolled back alone and the rest
- *     of the chunk goes on (mode continue) or the job stops there (stop_on_error). Item outcomes and the job's cursor
- *     are written in the same transaction, so a chunk is fully done and recorded or not at all.
- *     The first chunk of a longer job is a canary: when any document in it fails or conflicts, or none changed, the
- *     job pauses (`paused_canary`) until the caller resumes (control: "resume") or cancels it.
- *  4. A call runs chunks, with a short pause between them (bulk.paceMs), until the job is done or the time budget is
- *     used (bulk.timeBudgetMs, or max_chunks); {job_id} resumes it. Only the token that started a job can see, resume
- *     or cancel it. status_only pages through the items (failures, conflicts and skips by default, `items: "all"` for
- *     every one) instead of reading every chunk.
- *
- * runChunk(strapi, ctx, extra, jobId, owner) runs exactly one chunk of a stored job and returns its outcome: the hook
- * for an in-Strapi runner (a later stream). The job's whole state is in the two tables.
+ * Design notes: docs/internals.md, section "server/modules/_bulk/jobs.js".
  */
 const { z } = require('@strapi/utils');
 const E = require('../../engine');
@@ -44,6 +14,7 @@ const S = require('./store');
 const D = require('./deps');
 const FL = require('../_lib/filters');
 const RO = require('../../refops');
+const F = require('../../force');
 
 const { WsError } = E;
 
@@ -79,7 +50,7 @@ const history = () => require('../history');
  *               (the admin kill switch)
  */
 const HOOKS = { gate: null, chunkGuard: null };
-function setHooks(h) { Object.assign(HOOKS, h); }
+function setHooks(h) { const before = { ...HOOKS }; Object.assign(HOOKS, h); return before; }
 
 // ---------------------------------------------------------------- actions
 
@@ -93,12 +64,22 @@ function registerAction(name, impl) { actions[name] = impl; }
 
 const sameScalar = (a, b) => M.canonical(a) === M.canonical(b);
 
+/** publish: "if_clean": whether the item was (or would be) published, or why not. */
+function publishItem(item, spec, r, preview) {
+  if (!spec.publish) return item;
+  if (preview) item.would_publish = Boolean(r.would_publish);
+  else item.published = r.published === true;
+  if (r.publish_skipped) item.publish_skipped = r.publish_skipped;
+  return item;
+}
+
 registerAction('patch', {
   permission: 'update',
   events: ['entry.update'],
   validate(strapi, uid, spec) {
     const { set = {}, unset = [], ops = [] } = spec;
     if (!Object.keys(set).length && !unset.length && !ops.length) throw new WsError({ code: 'invalid', message: 'Nothing to change: give set, unset or ops.' });
+    E.checkPublishArg(strapi, uid, spec);
     // Rows can only be added (row keys differ per document); links of a to-many relation or a multiple media field (also
     // inside a single component, with path) are added or removed by ref (1.0 hardening item 20: the re-tag of job (d)).
     const bad = ops.filter((o) => (RO.isRefOp(o) ? o.key !== undefined : o.op !== 'add'));
@@ -126,12 +107,13 @@ registerAction('patch', {
     }
     const r = await E.applyPatch(strapi, ctx, {
       _tool: job.tool, uid: job.uid, documentId, locale: job.locale, set: job.spec.set, unset: job.spec.unset, ops: job.spec.ops,
-      expected_version: version, ...(preview ? { return: 'full', dry_run: true } : {}),
+      expected_version: version, ...(job.spec.publish ? { publish: job.spec.publish } : {}), ...(preview ? { return: 'full', dry_run: true } : {}),
     });
     // only ref ops, every one a no-op for this document: nothing written
     if (r.unchanged) return { documentId, status: 'unchanged', version: r.version };
     const item = { documentId, status: 'ok', version: r.version };
     if (r.rows) item.rows = r.rows;
+    publishItem(item, job.spec, r, preview);
     if (preview) {
       const pc = E.permissionChecker(strapi, ctx, job.uid);
       const fields = r.changed;
@@ -260,6 +242,8 @@ const jobView = (j) => ({ job_id: j.jobId, tool: j.tool, uid: j.contentType, loc
 const storedInfo = (it) => {
   if (it.error) return { error: it.error };
   if (it.reason) return { reason: it.reason };
+  if (it.publish_skipped) return { publish_skipped: it.publish_skipped };
+  if (it.published) return { published: true };
   return null;
 };
 
@@ -286,7 +270,7 @@ function canary(items) {
 
 /**
  * L1 (review of PR #16): in stop_on_error the stopping document is a failed item while the job is stopped (counted in
- * nFailed, listed in failures and in status_only), and goes back to pending, uncounted, when the job resumes (the
+ * nFailed, listed in failures and in ws_job status), and goes back to pending, uncounted, when the job resumes (the
  * resume retries it from the cursor).
  */
 function stopRecord(job, row, error) {
@@ -299,7 +283,7 @@ function unstopRecord(job) {
   return { docId: job.stopped.documentId };
 }
 
-const JOB_FIELDS = ['state', 'slot', 'cursor', 'chunks', 'stopped', 'paused', ...Object.values(S.COUNTERS)];
+const JOB_FIELDS = ['state', 'slot', 'cursor', 'chunks', 'stopped', 'paused', ...Object.values(S.COUNTERS), ...S.PUBLISH_COUNTERS];
 
 async function chunkTx(strapi, ctx, jobId, owner, fb, guard) {
   const job = await S.lockJob(strapi, jobId);
@@ -385,6 +369,8 @@ async function chunkTx(strapi, ctx, jobId, owner, fb, guard) {
   for (const { row, item } of done) {
     await S.setItem(strapi, row.id, item.status, job.chunks, storedInfo(item));
     job[S.COUNTERS[item.status]] += 1;
+    if (item.published) job.nPublished += 1;
+    if (item.publish_skipped) job.nPublishSkipped += 1;
   }
   const items = done.map((d) => d.item);
   const processed = stop ? stop.index : (cut !== null ? cut : upTo);
@@ -471,7 +457,10 @@ async function reconcile(strapi, job) {
 
 // ---------------------------------------------------------------- views
 
-const totalsOf = (j) => ({ ok: j.nOk, unchanged: j.nUnchanged, skipped: j.nSkipped, failed: j.nFailed, conflict: j.nConflict });
+const totalsOf = (j) => ({
+  ok: j.nOk, unchanged: j.nUnchanged, skipped: j.nSkipped, failed: j.nFailed, conflict: j.nConflict,
+  ...(j.spec && j.spec.publish ? { published: j.nPublished || 0, publish_skipped: j.nPublishSkipped || 0 } : {}),
+});
 
 function itemOut(job, r) {
   const info = r.info ? (typeof r.info === 'string' ? JSON.parse(r.info) : r.info) : null;
@@ -482,6 +471,8 @@ function itemOut(job, r) {
   if (stoppedHere) out.error = job.stopped.error;
   if (info && info.reason) out.reason = info.reason;
   if (info && info.error) out.error = info.error;
+  if (info && info.published) out.published = true;
+  if (info && info.publish_skipped) out.publish_skipped = info.publish_skipped;
   if (r.chunk) out.chunk = r.chunk;
   return out;
 }
@@ -496,7 +487,7 @@ function trimItem(it) {
 }
 
 const PAUSE_TEXT = {
-  canary: 'The job paused after its first chunk (the canary): some of its documents failed or conflicted, or none changed. Look at `items` and `paused`. Resume with {job_id, control: "resume"} if that is expected, or stop it with {job_id, control: "cancel"}. The documents of the first chunk are written; the rest are not.',
+  canary: 'The job paused after its first chunk (the canary): some of its documents failed or conflicted, or none changed. Look at `items` and `paused`. Resume with {job_id, control: "resume"} if that is expected, or stop it with ws_job {action: "cancel", job_id}. The documents of the first chunk are written; the rest are not.',
   admin: 'The site owner paused every bulk job (config writesafe.bulk.paused). Nothing more is written until they lift it; then resume with {job_id, control: "resume"}.',
   // [stream G] pauses only an admin lifts (Write-safe jobs page); control: "resume" is refused for them
   admin_job: 'An admin paused this job on the Write-safe jobs page. Only an admin can resume it there; tell the user.',
@@ -525,12 +516,12 @@ async function view(strapi, job, items, extra = {}) {
   };
   if (truncated) {
     r.items_truncated = true;
-    r.items_note = `This call handled ${items.length} documents (${ok} ok); the list shows ${shown.length} of its problems only. {job_id, status_only: true} pages through the problems, items: "all" through every document.`;
+    r.items_note = `This call handled ${items.length} documents (${ok} ok); the list shows ${shown.length} of its problems only. ws_job {action: "status", job_id} pages through the problems, with items: "all" through every document.`;
   }
-  if (status === 'running') r.next = { hint: 'Not finished. Call the same tool again with only {job_id} to continue.', job_id: job.jobId };
+  if (status === 'running') r.next = { hint: `Not finished. Call ${job.tool} again with only {job_id} to continue.`, job_id: job.jobId };
   if (status === 'stopped') {
     // The item's own error (Strapi's or the database's text) stays in `cause`; the message is the plugin's (review item 8).
-    r.error = { code: 'job_stopped', message: `Stopped at ${job.stopped.documentId}, which failed (see cause). Documents before it are written; it and the rest are not. Fix the cause and call again with {job_id} to retry from it, start a new job with mode "continue", or cancel this one with {job_id, control: "cancel"}.`, documentId: job.stopped.documentId, cause: job.stopped.error };
+    r.error = { code: 'job_stopped', message: `Stopped at ${job.stopped.documentId}, which failed (see cause). Documents before it are written; it and the rest are not. Fix the cause and call again with {job_id} to retry from it, start a new job with mode "continue", or cancel this one with ws_job {action: "cancel", job_id}.`, documentId: job.stopped.documentId, cause: job.stopped.error };
   }
   if (status === 'paused') {
     const p = job.paused || {};
@@ -539,7 +530,7 @@ async function view(strapi, job, items, extra = {}) {
   }
   if (status === 'cancelled') r.note = 'The job was cancelled: documents written before are kept; the rest were not written.';
   if (['done', 'stopped', 'paused', 'cancelled'].includes(status)) {
-    // M3: at most PROBLEMS_MAX of each, with how many more there are (status_only pages through all of them)
+    // M3: at most PROBLEMS_MAX of each, with how many more there are (ws_job status pages through all of them)
     for (const [state, key, n] of [['failed', 'failures', job.nFailed], ['conflict', 'conflicts', job.nConflict]]) {
       if (!n) continue;
       const page = await S.pageItems(strapi, job.jobId, { states: [state], limit: PROBLEMS_MAX });
@@ -548,7 +539,7 @@ async function view(strapi, job, items, extra = {}) {
       r[key] = list;
       if (n > list.length) r[`${key}_more`] = n - list.length;
     }
-    if (r.failures_more || r.conflicts_more) r.problems_hint = '{job_id, status_only: true} lists every failed, conflicting and skipped document, 200 per page.';
+    if (r.failures_more || r.conflicts_more) r.problems_hint = 'ws_job {action: "status", job_id} lists every failed, conflicting and skipped document, 200 per page.';
   }
   if (status === 'done' && job.reconcile) r.reconcile = job.reconcile;
   // [stream G] approval, runner and admin-pause fields
@@ -565,7 +556,7 @@ async function statusView(strapi, job, a) {
   v.items = page.rows.map((x) => itemOut(job, x));
   v.items_scope = all ? 'all' : 'problems';
   delete v.items_note;
-  if (page.next !== null) v.items_next = { cursor: String(page.next), hint: 'More items: call again with this cursor (and the same items).' };
+  if (page.next !== null) v.items_next = { cursor: String(page.next), hint: 'More items: call ws_job {action: "status"} again with this job_id and cursor (and the same items).' };
   if (!all) v.items_hint = 'Only failed, conflicting and skipped documents are listed; items: "all" pages through every document.';
   return v;
 }
@@ -574,10 +565,10 @@ async function statusView(strapi, job, a) {
 
 /**
  * The plan's spec hash (review of PR #16, M2): the job as it will RUN, not the raw arguments: the resolved spec
- * (ws_bulk: set/unset/ops; ws_replace: the pattern and the fields resolved from the token's permissions, which can
- * change between dry run and start), the action, mode and allow_all. Arguments that run, read or check a job
- * (chunk_size, max_chunks, preview, max_documents, expected_count, agent, ...) are not part of it; uid, locale and
- * filter are bound by the MAC separately.
+ * (ws_bulk: set/unset/ops and publish "if_clean"; ws_replace: the pattern, publish and the fields resolved from the
+ * token's permissions, which can change between dry run and start), the action, mode and allow_all. Arguments that
+ * run or check a job (chunk_size, max_chunks, preview, max_documents, expected_count, agent, ...) are not part of it;
+ * uid, locale and filter are bound by the MAC separately.
  */
 const specHash = (tool, a, desc) => M.sha(M.canonical({
   v: 2, tool, action: desc.action, spec: desc.spec || {}, mode: a.mode || 'stop_on_error', allow_all: Boolean(a.allow_all),
@@ -605,7 +596,7 @@ function checkJob(job, owner, tool) {
 function parseCursor(c) {
   if (c === undefined) return -1;
   if (typeof c !== 'string' || !/^-?\d+$/.test(c) || Number(c) < -1 || !Number.isSafeInteger(Number(c))) {
-    throw new WsError({ code: 'invalid', message: 'cursor must be the items_next.cursor of an earlier status_only reply.' });
+    throw new WsError({ code: 'invalid', message: 'cursor must be the items_next.cursor (or next_cursor) of an earlier ws_job reply.' });
   }
   return Number(c);
 }
@@ -693,20 +684,25 @@ function undoBudget(sizes, count, undoable) {
  * (ws_bulk: the filter match; ws_replace: the scan for the text).
  */
 async function handle(strapi, ctx, extra, tool, a, cfg, describe) {
+  refuseMoved(a);
   const owner = U.callerId(ctx, extra);
   await ready(strapi);
-  const budget = cfg.timeBudgetMs;
+  // read per call (the config may change in a running app)
+  const budget = U.settings(strapi).bulk.timeBudgetMs;
 
   if (a.job_id) {
     const job = checkJob(await S.findJob(strapi, a.job_id), owner, tool);
-    if (a.status_only) return statusView(strapi, job, a);
     return control(strapi, ctx, extra, job, owner, a, budget);
   }
   if (a.control) throw new WsError({ code: 'invalid', message: 'control needs job_id.' });
 
   const desc = await describe(strapi, ctx, a, cfg);
   const act = actions[desc.action];
-  act.validate(strapi, desc.uid, desc.spec);
+  act.validate(strapi, desc.uid, desc.spec || {});
+  // publish: "if_clean" needs publish permission (refused before any write, dry run included)
+  if (desc.spec && desc.spec.publish && E.permissionChecker(strapi, ctx, desc.uid).cannot.publish()) {
+    throw new WsError({ code: 'forbidden', message: `This token cannot publish ${desc.uid}, so publish: "if_clean" is refused. Leave publish out to write drafts only. Nothing was written.` });
+  }
   // [stream G] with approvals, a job may match up to the admin ceiling; above bulk.maxDocuments it needs approval
   desc.ceiling = HOOKS.gate ? HOOKS.gate.ceiling(cfg) : cfg.maxDocuments;
   const max = Math.min(a.max_documents ?? desc.ceiling, desc.ceiling);
@@ -721,7 +717,8 @@ async function handle(strapi, ctx, extra, tool, a, cfg, describe) {
     const sizes = []; // item 21: each previewed write's before-image size (undo_budget)
     const preview = await previewRows(strapi, ctx, extra, tool, job,
       previewPositions(c.count, n).map((i) => ({ position: i, docId: c.entries[i].documentId, planVersion: c.entries[i].version })), sizes);
-    const kinds = act.events || ['entry.update'];
+    // publish "if_clean": each document published also fires entry.publish (at_most counts both)
+    const kinds = [...(act.events || ['entry.update']), ...(desc.spec && desc.spec.publish ? ['entry.publish'] : [])];
     const out = {
       ok: true, dry_run: true, written: false, tool, uid: desc.uid, locale: desc.locale || null, action: desc.action,
       match_count: c.count, max_documents: max, chunk_size: chunkSize, chunks: Math.ceil(c.count / chunkSize), preview,
@@ -729,6 +726,10 @@ async function handle(strapi, ctx, extra, tool, a, cfg, describe) {
       // written document (an unchanged or skipped one fires none); every webhook subscribed to them is called as often.
       events: { per_document: kinds, at_most: c.count * kinds.length, note: 'Fired after each chunk commits, once per document actually written; every webhook subscribed to these events is called that often. On a localized type, a change to a non-localized field is also copied by Strapi to the other locales\' drafts, which can fire more events than at_most counts. Lifecycle hooks and Document Service middlewares also ran during this dry run.' },
       undoable, ...(undoable ? {} : { undo_note: act.undoable === false ? 'A publish is not undone by ws_undo.' : 'The history module is off: ws_undo cannot revert this job.' }),
+      ...(desc.spec && desc.spec.publish ? {
+        publish: desc.spec.publish,
+        publish_note: 'Each document is published in the same write only if its draft had no other unpublished changes (would_publish in the preview); the others stay drafts. An undo reverts the drafts, not what was published.',
+      } : {}),
       ...(undoable ? { undo_budget: undoBudget(sizes, c.count, undoable) } : {}),
       ...(c.extra || {}),
       // [stream G] whether starting it needs an admin's approval (and whether approvals are possible here)
@@ -775,7 +776,7 @@ async function handle(strapi, ctx, extra, tool, a, cfg, describe) {
   const job = {
     jobId, owner, slot: `${owner}|${desc.uid}`, tool, contentType: desc.uid, targetLocale: desc.locale || null, action: desc.action,
     spec: desc.spec, qfilters: c.qfilters, mode: a.mode || 'stop_on_error', chunkSize, state: 'running', total: c.count, cursor: 0, chunks: 0,
-    nOk: 0, nUnchanged: 0, nSkipped: 0, nFailed: 0, nConflict: 0, undoable, idHash, ...(a.agent ? { agent: String(a.agent).slice(0, 80) } : {}),
+    nOk: 0, nUnchanged: 0, nSkipped: 0, nFailed: 0, nConflict: 0, nPublished: 0, nPublishSkipped: 0, undoable, idHash, ...(a.agent ? { agent: String(a.agent).slice(0, 80) } : {}),
   };
   // [stream G] above the automatic tier: refused here (no approvals possible, unsafe token, ...) or stored as
   // awaiting_approval (it holds the slot) and not run until an admin approves; the snapshot is written either way
@@ -784,7 +785,7 @@ async function handle(strapi, ctx, extra, tool, a, cfg, describe) {
     const other = await S.activeJob(strapi, job.slot);
     if (!other) return null;
     return new WsError({ code: 'job_running', job_id: other.jobId, status: other.state,
-      message: `This token already has an active ${other.tool} job on ${desc.uid} (${other.state}). Finish it with {job_id}, or cancel it with {job_id, control: "cancel"}, then start this one. Nothing was written.` });
+      message: `This token already has an active ${other.tool} job on ${desc.uid} (${other.state}). Finish it with {job_id}, or cancel it with ws_job {action: "cancel", job_id}, then start this one. Nothing was written.` });
   };
   try {
     await E.runWrite(strapi, ctx, tool, {}, async () => {
@@ -807,6 +808,25 @@ async function handle(strapi, ctx, extra, tool, a, cfg, describe) {
   return runJob(strapi, ctx, extra, jobId, owner, budget, a.max_chunks);
 }
 
+/** ws_job cancel: under the row lock (a running chunk finishes first) an active job is cancelled; writes stay. */
+async function cancelJob(strapi, ctx, extra, job) {
+  let j = job;
+  let cancelled = false;
+  await E.runWrite(strapi, ctx, 'ws_bulk', {}, async () => {
+    j = await S.lockJob(strapi, job.jobId);
+    if (!j) throw new WsError({ code: 'not_found', job_id: job.jobId, message: `No bulk job ${job.jobId} for this token (it was removed meanwhile).` });
+    if (S.ACTIVE.includes(j.state)) {
+      j.state = 'cancelled';
+      j.slot = null;
+      cancelled = true;
+      await S.saveJob(strapi, j, ['state', 'slot']);
+    }
+    return {};
+  }, extra);
+  if (cancelled && HOOKS.gate) await HOOKS.gate.onCancel(strapi, j);
+  return { job: j, cancelled };
+}
+
 /** {job_id} (with control) on an existing job. */
 async function control(strapi, ctx, extra, job, owner, a, budget, extraView) {
   // [stream G] a job waiting for approval starts here once approved; an admin's pause is lifted only by an admin
@@ -815,21 +835,8 @@ async function control(strapi, ctx, extra, job, owner, a, budget, extraView) {
     if (g && g.reply) return { ...g.reply, ...(extraView || {}) };
     if (g && g.reload) job = await S.findJob(strapi, job.jobId);
   }
-  if (a.control === 'cancel') {
-    let j = job;
-    await E.runWrite(strapi, ctx, 'ws_bulk', {}, async () => {
-      j = await S.lockJob(strapi, job.jobId);
-      if (!j) throw new WsError({ code: 'not_found', job_id: job.jobId, message: `No bulk job ${job.jobId} for this token (it was removed meanwhile).` });
-      if (S.ACTIVE.includes(j.state)) {
-        j.state = 'cancelled';
-        j.slot = null;
-        await S.saveJob(strapi, j, ['state', 'slot']);
-      }
-      return {};
-    }, extra);
-    if (HOOKS.gate) await HOOKS.gate.onCancel(strapi, j);
-    return view(strapi, j, []);
-  }
+  // internal only: the tools refuse control "cancel" (ws_job cancels)
+  if (a.control === 'cancel') return view(strapi, (await cancelJob(strapi, ctx, extra, job)).job, []);
   return resumeView(strapi, ctx, extra, job, owner, a, budget, extraView);
 }
 
@@ -880,6 +887,38 @@ async function runJob(strapi, ctx, extra, jobId, owner, budget, maxChunks, extra
 }
 
 const ID = { bool: (x) => x, int: (x) => x, obj: (x) => x, arr: (x) => x };
+
+// moved to ws_job: refused here (schema and handler) with an invalid error naming ws_job. max_chunks stays here: it
+// paces a call ({job_id, max_chunks} or a start), it does not read or control the job.
+const MOVED_KEYS = ['status_only', 'items', 'cursor'];
+const MOVED = 'moved to the ws_job tool: ws_job {action: "status", job_id} reads a job (items, cursor), {action: "cancel", job_id} '
+  + 'cancels it. Here {job_id} continues a job (max_chunks limits the chunks of the call), {job_id, control: "resume"} resumes a paused one. Nothing was run.';
+const CANCEL_MOVED = `control "cancel": ${MOVED}`;
+const movedText = (keys) => `${keys.join(', ')}: ${MOVED}`;
+const movedIn = (a) => MOVED_KEYS.filter((k) => a && a[k] !== undefined);
+function refuseMoved(a) {
+  const keys = movedIn(a);
+  if (a && a.control === 'cancel') throw new WsError({ code: 'invalid', message: CANCEL_MOVED });
+  if (keys.length) throw new WsError({ code: 'invalid', message: movedText(keys) });
+}
+/** z.object(shape).strict(); refusing a moved argument names ws_job (zod 4: `error`, zod 3: `errorMap`). */
+function jobSchema(shape) {
+  const why = (code, keys) => {
+    if (code !== 'unrecognized_keys' || !Array.isArray(keys)) return undefined;
+    const moved = keys.filter((k) => MOVED_KEYS.includes(k));
+    if (moved.length) return movedText(moved);
+    if (keys.includes('force') && !F.allowed()) return F.DISABLED_MESSAGE;
+    return undefined;
+  };
+  if (typeof z.toJSONSchema === 'function') return z.object(shape, { error: (iss) => why(iss.code, iss.keys) }).strict();
+  return z.object(shape, { errorMap: (iss, ctx) => ({ message: why(iss.code, iss.keys) || ctx.defaultError }) }).strict();
+}
+function controlSchema() {
+  const why = (input) => (input === 'cancel' ? CANCEL_MOVED : undefined);
+  if (typeof z.toJSONSchema === 'function') return z.enum(['resume'], { error: (iss) => why(iss.input) });
+  return z.enum(['resume'], { errorMap: (iss, ctx) => ({ message: why(ctx.data) || ctx.defaultError }) });
+}
+
 function jobArgs(L = ID) {
   return {
     plan_token: z.string().max(400).optional().describe('From your dry run: starts the job on exactly the documents the dry run matched. Required to start (plan_required); refused if the request or the matches changed (plan_mismatch) or after 15 minutes (plan_expired). Sending the same start again resumes the job it started.'),
@@ -889,15 +928,15 @@ function jobArgs(L = ID) {
     mode: z.enum(['stop_on_error', 'continue']).optional().describe('stop_on_error (default): stop at the first failing document; continue: record it as failed and go on.'),
     dry_run: L.bool(z.boolean()).optional().describe('Count the matches, preview a spread of the changes (patches are written, then rolled back, so Strapi lifecycle hooks and middlewares run for them; publishes are previews that do not call Strapi\'s publish) and get a plan_token. Nothing is stored.'),
     preview: L.int(z.number().int().min(0).max(20)).optional().describe('Dry run: how many documents to preview, spread from first to last (default 5).'),
-    job_id: z.string().optional().describe('Resume, read (status_only) or control a job this token started. Give only job_id and optionally max_chunks, status_only, items, cursor or control.'),
-    control: z.enum(['resume', 'cancel']).optional().describe('With job_id: resume a paused job (for example after the canary paused it), or cancel a job (its earlier writes stay).'),
-    max_chunks: L.int(z.number().int().min(1)).optional().describe('Run at most this many chunks in this call (the job stays resumable).'),
-    status_only: L.bool(z.boolean()).optional().describe('With job_id: the job state and its items without running anything (200 per page).'),
-    items: z.enum(['problems', 'all']).optional().describe('status_only: "problems" (default: failed, conflicting and skipped documents) or "all".'),
-    cursor: z.string().max(20).optional().describe('status_only: items_next.cursor of the previous page.'),
+    job_id: z.string().optional().describe('Continue a job this token started: only job_id, optionally max_chunks (and control "resume" if paused). Reading, cancelling, undoing: ws_job.'),
+    max_chunks: L.int(z.number().int().min(1)).optional().describe('Run at most this many chunks in this call (the job stays resumable with {job_id}). Default: until done or the time budget is used.'),
+    control: controlSchema().optional().describe('With job_id: "resume" a paused job (e.g. after the canary). To cancel use ws_job.'),
     ...E.MOD.writeArgs(z), // [integration] e.g. `agent` (history module): the label goes on every chunk receipt
   };
 }
+
+// publish only when given: a plan without it keeps its rc.2 spec hash (and cannot start a job that publishes)
+const bulkSpec = (a) => ({ set: a.set, unset: a.unset, ops: a.ops, ...(a.publish !== undefined ? { publish: a.publish } : {}) });
 
 function toolDef(strapi, h, cfg) {
   const bcfg = cfg.bulk;
@@ -905,19 +944,17 @@ function toolDef(strapi, h, cfg) {
   return {
     name: 'ws_bulk',
     title: 'Write-safe: patch or publish every document matching a filter',
-    description: 'One change over many documents: action "patch" (set/unset fields, add rows) or "publish", on every draft that matches `filters` (Strapi filter syntax, e.g. {"category": {"name": {"$eq": "News"}}}). '
+    description: 'One change over many documents: action "patch" (set/unset fields, add rows, add/remove links by ref) or "publish", on every draft that matches `filters` (Strapi filter syntax, e.g. {"category": {"name": {"$eq": "News"}}}). '
       + 'Two calls: first dry_run: true, which returns match_count, a before/after preview, the events it will fire and a plan_token; then the same call without dry_run, with plan_token. '
       + 'The job runs on exactly the documents the dry run matched (documents added later are not touched; the end report counts them). Each document is re-read under lock and written with its current version as precondition '
-      + '(publish: only the draft version the dry run saw), and gets a status (ok, unchanged, skipped, failed, conflict). Long jobs return status "running" with a job_id; call again with {job_id} to continue. '
+      + '(publish: only the draft version the dry run saw), and gets a status (ok, unchanged, skipped, failed, conflict). '
+      + 'patch with publish: "if_clean" also publishes each document whose draft had no other unpublished changes. '
+      + 'Long jobs return status "running" with a job_id; call again with {job_id} to continue. ws_job reads, lists, cancels or undoes jobs. '
       + `A filter is required (allow_all: true to select every document). At most ${bcfg.maxDocuments} documents per job.`,
-    description: 'One change over many documents: action "patch" (set/unset fields, add rows, add/remove links by ref) or "publish", on every draft that matches `filters` (Strapi filter syntax, e.g. {"title": {"$contains": "Sale"}}). '
-      + 'Run with dry_run first: it returns match_count and a before/after preview. Then run without dry_run (pass expected_count): the job runs in chunks, '
-      + 'each document is re-read under lock and written with its current version as precondition, and every item gets a status (ok, unchanged, skipped, failed). '
-      + 'Long jobs return status "running" with a job_id; call again with {job_id} to continue (also after an interruption). mode stop_on_error (default) or continue.',
     // update or publish (1.0 hardening item 9): a publish-only token may run action "publish"; match() checks the
     // action's own permission.
     auth: h.policies(strapi, ['plugin::content-manager.explorer.update', 'plugin::content-manager.explorer.publish']),
-    resolveInputSchema: () => z.object({
+    resolveInputSchema: () => jobSchema({
       uid: h.uidSchema(strapi).optional().describe('Content type UID (not needed with job_id).'),
       locale: h.localeSchema,
       filters: L.obj(z.object({}).catchall(z.any())).optional().describe('Strapi filters selecting the drafts, e.g. {"note": {"$null": true}}. Required unless allow_all is true.'),
@@ -926,8 +963,9 @@ function toolDef(strapi, h, cfg) {
       set: L.obj(z.object({}).catchall(z.any())).optional().describe('patch: fields to set on every document (as ws_patch set).'),
       unset: L.arr(z.array(z.string())).optional().describe('patch: fields to clear on every document (as ws_patch unset).'),
       ops: L.arr(z.array(L.obj(z.object({}).passthrough()))).optional().describe('patch: ops without keys (row keys differ per document): {op: "add", ...} rows, and {op: "add"|"remove", field, ref} links (keeps other links).'),
+      publish: z.enum(['if_clean']).optional().describe('patch: "if_clean": also publish each document in the same write if its draft equalled its live version before; else it stays a draft (publish_skipped). Needs publish permission.'),
       ...jobArgs(L),
-    }).strict(),
+    }),
     resolveOutputSchema: () => z.object({}).passthrough(),
     createHandler: (s, context) => async ({ args, extra }) => {
       try {
@@ -936,6 +974,7 @@ function toolDef(strapi, h, cfg) {
           E.checkUid(st, a.uid);
           const action = a.action || 'patch';
           if (action === 'publish' && (a.set || a.unset || a.ops)) throw new WsError({ code: 'invalid', message: 'publish takes no set, unset or ops.' });
+          if (action === 'publish' && a.publish !== undefined) throw new WsError({ code: 'invalid', message: 'publish: "if_clean" goes with action "patch" (action "publish" publishes every matching draft as it is).' });
           // Item 17: a missing or empty filter selected every document (fourth review N17: `{uid, set}` alone patched
           // everything up to the ceiling).
           if (isEmptyFilter(a.filters) && !a.allow_all) {
@@ -944,7 +983,7 @@ function toolDef(strapi, h, cfg) {
           const locale = await E.resolveLocale(st, a.uid, a.locale);
           const filters = a.filters || {};
           return {
-            uid: a.uid, locale, action, filters, spec: action === 'patch' ? { set: a.set, unset: a.unset, ops: a.ops } : {},
+            uid: a.uid, locale, action, filters, spec: action === 'patch' ? bulkSpec(a) : {},
             collect: (max) => match(st, ctx, a.uid, locale, filters, action, max),
           };
         });
@@ -957,6 +996,7 @@ function toolDef(strapi, h, cfg) {
 module.exports = {
   toolDef, registerAction, handle, jobArgs, match, applyOne, runChunk, chunkTx, reconcile, statusView, view, canary, previewPositions, specHash,
   actions, isEmptyFilter, startCheck, checkJob, parseCursor, compactError, stopRecord, unstopRecord, control,
+  cancelJob, refuseMoved, jobSchema, MOVED, MOVED_KEYS, bulkSpec, publishItem, totalsOf, itemOut, storedInfo, ready, runJob,
   // [stream G] used by server/runner/adapter.js and server/approval/gate.js
   setHooks, jobView, previewRows, PAUSE_TEXT,
 };

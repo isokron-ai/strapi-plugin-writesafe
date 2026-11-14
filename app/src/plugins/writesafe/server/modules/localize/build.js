@@ -2,41 +2,7 @@
 
 /**
  * Build a target locale from a source locale's structure.
- *
- * Text units are the translatable values of the source: string, text, richtext and uid fields, at any depth inside
- * components and dynamic zones, and the text leaves of blocks. Each has a STRUCTURAL path (1.0 hardening item 15):
- * positions and types, never database row ids, so a path stays the same when Strapi recreates the source's component
- * rows without changing them (the i18n sync on a new locale, an import), e.g.
- *   title                                         a top-level field
- *   seo.metaTitle                                 a field of a single component
- *   sections[0:blocks.hero].heading              a field of the first dynamic-zone row, a blocks.hero
- *   items[1:shared.item].label                    a field of the second row of a repeatable component
- *   groups[0:shared.group].entries[1:shared.meta].note   a row of a repeatable nested in a component row
- *   body[0:paragraph].children[0].text            a text leaf of the first blocks node, a paragraph
- * A path names a position of a given type: if the source moves, removes or retypes a row, its version changes and the
- * plan must be read again (expected_source_version).
- *
- * Everything else is structure and is copied: row order, component types, numbers, enumerations, booleans, JSON,
- * media (ids) and relations (mapped: a relation to a localized type points to the related document's version in the
- * target locale when it exists, and is left out and reported otherwise; a relation to a type without i18n is kept).
- * Non-localized fields are never written (Strapi keeps them in sync across locales).
- *
- * Updating an existing target locale: every source row is paired with a target row through an explicit row map
- * (1.0 hardening phase 2, item 12; ChatGPT review, fourth review N18), never by position. A paired row keeps its id and
- * its own per-locale values (translated text, media, enumerations, relations). In order:
- *   1. row_map from the caller: {"<list path>": {"<source row ref>": "<target row ref>" | null}} (null: a new row);
- *   2. the map recorded by earlier ws_localize writes of this document and locale pair (links.js): source row id ->
- *      target row id, kept up to date after every write;
- *   3. a component type with exactly one unpaired, unrecorded row on each side pairs those two.
- * Anything else (two same-type rows on one side, one or more on the other) is ambiguous: the plan lists it with a
- * proposed pairing, and a write is refused (ambiguous_rows) until the caller sends a row_map. Source rows left unpaired
- * are added (copied from the source). Target rows left unpaired (only in the target, or their source row was removed)
- * are KEPT where they are, unless remove_extra_rows is set; the plan lists them either way. The output follows the
- * source order, with kept target rows after the target row they followed. Blocks nodes match by index when their
- * node structure is the same. copy_non_text: true copies non-text values from the source into paired rows too.
- *
- * Row refs: the plan shows rows as structural positions "<index>:<component>" (as in unit paths such as
- * sections[0:blocks.hero]); row_map also takes a ws_get row key ("<component>:<id>:<mac>") or identity for a row.
+ * Design notes: docs/internals.md, section "server/modules/localize/build.js".
  */
 const M = require('../../model');
 const L = require('../_lib/locales');

@@ -214,6 +214,8 @@ const MODULE_LINES = {
   copy: '- ws_patch op "copy" duplicates a row of a list field.',
 };
 
+const JOB_LINE = '- ws_job lists, reads (documents page by page), cancels or undoes your jobs. To continue a job, call its tool with {job_id} (max_chunks: at most that many chunks per call).';
+
 /**
  * What the built-in content-manager tools are still needed for, given the enabled modules: ws_patch covers every
  * field of an existing document (top-level relations and media included since 1.0), so only creating, deleting and
@@ -240,8 +242,11 @@ function instructions(uids, mode, modules = [], uncovered = [], { allowForce = f
     `- ${RULE_DATA}`,
     '- ws_get reads a draft with its `version` token and the row keys of every list field.',
     '- ws_patch changes one draft: `ops` add/update/remove/move single rows of dynamic zones, repeatable components and blocks by key, and add/remove single links of to-many relations and multiple media by `ref` (no version needed); `set`/`unset` change fields and need expected_version.',
+    '- ws_patch if_match {field: value you read} instead of expected_version checks only the fields you set (mergeable). '
+      + 'publish: "if_clean" also publishes the draft if it had no other unpublished change.',
     '- ws_publish publishes only the draft version that was reviewed (expected_version). ws_batch runs several patches/publishes all-or-nothing.',
     ...(modules || []).filter((m) => MODULE_LINES[m]).map((m) => MODULE_LINES[m]),
+    ...((modules || []).some((m) => m === 'bulk' || m === 'replace') ? [JOB_LINE] : []),
     '- On error.code version_conflict of a patch: use `current` (or re-read), re-apply only your own change, retry with the new expected_version; never resend your old copy. '
       + 'Of a publish or delete: the content is not what was approved; get approval for the new state first.',
     '- Row keys are bound to the row\'s content: a reply returns new keys only for rows you added or named (`added`, `rekeyed`). For any other row, and on stale_row_key (the row changed since you read it) or row_not_found: read again (ws_get) and use the keys it shows.',

@@ -125,7 +125,7 @@ function create({ store, now = () => Date.now(), settings, isStillApprover = asy
       // approval would let a job do what nobody approving it may do (review finding 7). mayAct: bool or fn(request).
       const may = typeof approver.mayAct === 'function' ? approver.mayAct(req) : approver.mayAct;
       if (may !== true) {
-        throw new ApprovalError('approver_lacks_permission', `You may not ${req.action === 'publish' ? 'publish' : 'update'} ${req.uid} yourself, so you cannot decide a job that does it.`, 403);
+        throw new ApprovalError('approver_lacks_permission', `You may not ${req.action === 'publish' ? 'publish' : (req.spec && req.spec.publish === 'if_clean' ? 'update and publish' : 'update')} ${req.uid} yourself, so you cannot decide a job that does it.`, 403);
       }
       const approverId = String(approver.id);
       const decisions = await store.listDecisions(requestId);

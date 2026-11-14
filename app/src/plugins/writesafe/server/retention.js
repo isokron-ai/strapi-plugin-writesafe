@@ -4,24 +4,7 @@
  * Retention for the receipts table (1.0 hardening item 5; Gemini review, fourth review N16). rc.2 only pruned history
  * rows: bulk jobs, their chunk rows, abandoned media claims and every idempotency row stayed for good, and a keyed row's
  * stored reply could hold a whole document (`return: "full"`, ws_delete's `recreate`), so deleted content stayed too.
- *
- * Config: writesafe.config.retention, every key optional:
- *   keyHours (72)         an idempotency key answers retries for this long; then its row is deleted, or, when the
- *                         history module still keeps the write's history, turned into a plain history row ("h:<id>")
- *                         with the stored documents stripped. A retry after that is a new request.
- *   jobHours (72)         a bulk job (its row and item rows in writesafe_bulk_jobs / writesafe_bulk_items, and an
- *                         rc.2 job's receipt and chunk rows) idle this long is deleted, finished or not. Its writes keep
- *                         their own history receipts (ws_undo with the job id works while those last).
- *   longHorizonDays (30)  [stream G] a paused job, and an approved job already under way, are kept this long idle (not
- *                         jobHours), with their approval request and lease, unless an admin cancels them first.
- *   claimMinutes (60)     a claim that never got its reply (a media import whose process died) is deleted after this.
- *   implicitClaimMinutes (10)  the implicit retry record of a versioned write without idempotency_key (1.0 hardening
- *                         item 16d) answers identical retries for this long; then it is deleted (or turned into a plain
- *                         history row), so a deliberate re-run of the same request applies again (re-review N1).
- *                         0 keeps them as long as idempotency keys (keyHours).
- *   pruneEverySeconds (3600)  how often the prune runs (also once at startup); 0 runs it on every ws_history call and
- *                         at startup only (tests).
- * 0 for keyHours or jobHours keeps those rows. History rows have their own retention (history.retentionDays).
+ * Design notes: docs/internals.md, section "server/retention.js".
  */
 const RECEIPT_UID = 'plugin::writesafe.receipt';
 const DEFAULTS = { keyHours: 72, jobHours: 72, claimMinutes: 60, implicitClaimMinutes: 10, pruneEverySeconds: 3600, longHorizonDays: 30 };

@@ -2,29 +2,7 @@
 
 /**
  * The database epoch of component row keys (1.0 hardening item 16b).
- *
- * A random value, created once per database, mixed into every component row key (model.rowHandle). It lives in its own
- * table, `writesafe_row_epoch`, created with knex and NOT declared as a Strapi content type or model, because:
- *   - Strapi's data transfer (`strapi export`, `strapi import`, `strapi transfer`) carries every content type (plugin
- *     ones included: the receipts table travels with the content) and the core store (its `configuration` stage), but
- *     nothing else. So an import into a fresh database never brings the source's epoch: the fresh database creates its
- *     own at first start, and every key read from the source is refused (stale_row_key) instead of naming whatever row
- *     now has that id. An import into the same database leaves the table alone: keys stay valid where the row content
- *     is still the same (and fail where it is not).
- *   - Strapi's schema sync leaves tables it never created alone ("a user custom table that we should not touch",
- *     @strapi/database schema/diff), so the table survives restarts and upgrades.
- * A dump-and-restore of the whole database (pg_dump, mysqldump, a copied SQLite file) carries the table: the restored
- * database keeps its ids and sequences too, so its keys stay valid; the content MAC still refuses a key whose row
- * changed. An admin can force every key stale by deleting the row (or the table): the next check creates a new epoch.
- *
- * Missing at runtime (table or row gone): the next check (at most every REFRESH_MS, 10 s, before a read or write that
- * hands out or takes keys) creates a new epoch, so old keys are refused. If the read works but the epoch cannot be
- * created again, a fresh random per-process epoch is used at once (fail closed, phase 2 A review finding 5). If the
- * read itself fails (a pool timeout, a dropped connection), the epoch last read from the database is kept for up to
- * TRANSIENT_GRACE_MS (60 s, re-review N4), then the plugin fails closed the same way until a read works again. At
- * bootstrap there is no epoch to keep: a failed first read starts on a per-process epoch.
- * Several replicas: each re-reads the epoch on its own schedule, so after a reset a replica can keep accepting old keys
- * for up to REFRESH_MS (10 s); after that every replica uses the new one.
+ * Design notes: docs/internals.md, section "server/epoch.js".
  */
 const crypto = require('crypto');
 const M = require('./model');

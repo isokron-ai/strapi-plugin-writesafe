@@ -2,33 +2,7 @@
 
 /**
  * The plan token of a bulk job (1.0 hardening item 17; fourth review N17).
- *
- * A dry run of ws_bulk or ws_replace ends with a plan token; a start must present it. The token is
- *
- *   wsp1.<payload>.<mac>
- *
- * payload  base64url of the JSON {e, n, h, u, r}: expiry (unix seconds), match count, the id-list hash (sha256 of the
- *          matched documentIds in job order, base64url; for a publish job each entry also carries the draft version the
- *          dry run read, so a newer draft never takes its place), `undoable` (1 or 0) and a random nonce (96 bits), so
- *          two dry runs of one request are two plans (two jobs). Nothing in it is secret: the server recomputes the
- *          rest at the start and compares.
- * mac      a full-length HMAC-SHA256 (base64url, 43 characters) under the plan key over
- *          "wsp1", the owner (the token identity: user id plus a hash of the bearer token), the content type uid, the
- *          locale, the canonical filter, the action, the spec hash (every argument that defines the job), the count,
- *          the id-list hash, undoable, the expiry and the nonce.
- *
- * The plan key is derived from the app's APP_KEYS (a separate derivation from the version key), so a token cannot be
- * made or altered without them. Without app keys a random per-process key is used: tokens then die on a restart.
- *
- * What a start checks, in order (jobs.js):
- *   1. the token is present and well formed            → plan_required
- *   2. the MAC over THIS request and THIS token holder  → plan_mismatch (reason "request": other arguments, another
- *                                                          token's plan, or an altered token)
- *   3. the job derived from the token exists           → resume it (a lost reply is recovered by the same start)
- *   4. the expiry                                      → plan_expired
- *   5. the matches now: count and id-list hash         → plan_mismatch (reason "matches": the set changed since the
- *                                                          dry run; nothing was written)
- * The job id is derived from the MAC: one plan starts at most one job.
+ * Design notes: docs/internals.md, section "server/modules/_bulk/plan.js".
  */
 const crypto = require('crypto');
 const M = require('../../model');

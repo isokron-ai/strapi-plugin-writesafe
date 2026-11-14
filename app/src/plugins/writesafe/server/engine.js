@@ -231,6 +231,67 @@ function assertVersion(v, name = 'expected_version') {
   }
 }
 
+/**
+ * if_match: compare-and-set on the top-level fields it names, in semantic form (as the version) on the token's view.
+ * A set/unset without expected_version needs an entry for each field it writes; other fields never block it.
+ */
+const IF_MATCH_HINT = 'Re-read with ws_get, re-apply only your change to the new value, and retry with if_match set to the value read now '
+  + '(or with expected_version). Do not resend your old copy: it would undo the other change.';
+function ifMatchKeys(strapi, uid, a) {
+  const m = a.if_match;
+  if (m === undefined) return null;
+  const bad = (msg, x) => new WsError({ code: 'invalid', field: 'if_match', message: `${msg} Nothing was written.`, ...x });
+  if (!m || typeof m !== 'object' || Array.isArray(m) || !Object.keys(m).length) throw bad('if_match is an object {"<field>": <the value you read with ws_get>}.');
+  if (a.force) throw bad('if_match and force contradict each other: leave one out.');
+  const keys = Object.keys(m);
+  const dotted = keys.filter((k) => /[.[\]]/.test(k));
+  if (dotted.length) throw bad(`if_match takes top-level fields only (${dotted.join(', ')}); a component, list or relation is compared whole.`);
+  const attrs = M.attrsOf(strapi, uid);
+  const unknown = keys.filter((k) => !attrs[k] || M.SKIP_KEYS.has(k));
+  if (unknown.length) throw bad(`Unknown or read-only if_match field(s): ${unknown.join(', ')}.`, { allowed: Object.keys(attrs).filter((k) => !M.SKIP_KEYS.has(k)) });
+  return keys;
+}
+/** Permission paths of a field: a component's leaf paths (nested ones expanded), else the field itself. */
+function leafPaths(strapi, path, a, depth = 0) {
+  const comp = a && a.type === 'component' && strapi.components && strapi.components[a.component];
+  if (!comp || depth > 8) return [path];
+  return Object.entries(comp.attributes || {}).filter(([k, x]) => k !== 'id' && x.visible !== false)
+    .flatMap(([k, x]) => leafPaths(strapi, `${path}.${k}`, x, depth + 1));
+}
+/** The if_match fields whose current value (the token's view, under the row lock) differs from the one sent. */
+async function ifMatchChanged(strapi, pc, uid, raw, ifMatch) {
+  const keys = Object.keys(ifMatch);
+  const visible = await pc.sanitizeOutput(raw);
+  const attrs = M.attrsOf(strapi, uid);
+  // a field not wholly readable (every sub-field of a component) is refused, never compared: no oracle
+  const readable = (f) => !pc.cannot.read(raw, f) || leafPaths(strapi, f, attrs[f]).every((p) => p !== f && !pc.cannot.read(raw, p));
+  const hidden = keys.filter((f) => !readable(f) || (raw && f in raw && !(visible && f in visible)));
+  if (hidden.length) throw new WsError({ code: 'forbidden', field: 'if_match', message: `This token cannot read field(s) ${hidden.join(', ')}, so if_match cannot name them. Nothing was written.` });
+  const view = M.normalize(strapi, uid, visible);
+  const form = (f, v) => {
+    let x = M.semanticValue(strapi, attrs[f], v === undefined ? null : v);
+    if (x == null && M.isListAttr(attrs[f])) x = [];
+    return M.canonical(x);
+  };
+  return keys.filter((f) => form(f, view[f]) !== form(f, ifMatch[f]));
+}
+
+/**
+ * publish: "if_clean": the patch also publishes, in the same transaction, only a draft that equalled its live version
+ * before it (semantic form); otherwise it stays a draft (publish_skipped).
+ */
+function checkPublishArg(strapi, uid, a) {
+  if (a.publish === undefined) return;
+  if (a.publish !== 'if_clean') throw new WsError({ code: 'invalid', field: 'publish', message: 'publish takes only "if_clean" (ws_publish publishes a draft as it is). Nothing was written.' });
+  if (!hasDP(strapi, uid)) throw new WsError({ code: 'invalid', field: 'publish', message: `${uid} has no draft & publish: leave out publish. Nothing was written.` });
+}
+/** 'clean' if the draft equalled the live version (before the patch), else the publish_skipped reason. */
+async function cleanState(strapi, uid, documentId, locale, raw) {
+  const live = await strapi.documents(uid).findOne({ documentId, ...(locale ? { locale } : {}), status: 'published', populate: M.populateFor(strapi, uid) });
+  if (!live) return 'no_live_version';
+  return M.semanticHash(strapi, uid, raw) === M.semanticHash(strapi, uid, live) ? 'clean' : 'draft_had_other_changes';
+}
+
 const stripMeta = (row) => {
   const out = {};
   for (const [k, v] of Object.entries(row || {})) if (k !== '_key') out[k] = v;
@@ -662,12 +723,17 @@ async function applyPatch(strapi, ctx, a) {
   const { uid } = a;
   checkUid(strapi, uid);
   assertVersion(a.expected_version);
+  checkPublishArg(strapi, uid, a);
+  const matchKeys = ifMatchKeys(strapi, uid, a);
   const locale = await resolveLocale(strapi, uid, a.locale);
   const documentId = await resolveDocumentId(strapi, uid, a.documentId, locale);
   const raw = await lockAndRead(strapi, uid, documentId, locale);
   const doc = M.normalize(strapi, uid, raw); // relations as documentIds: hashed, shown and written back in this form
   const pc = permissionChecker(strapi, ctx, uid);
   if (pc.cannot.update(raw)) throw new WsError({ code: 'forbidden', message: `This token cannot update ${uid} ${documentId}.` });
+  if (a.publish && pc.cannot.publish(raw)) {
+    throw new WsError({ code: 'forbidden', message: `This token cannot publish ${uid} ${documentId}: leave out publish. Nothing was written.` });
+  }
 
   const attrs = M.attrsOf(strapi, uid);
   const set = a.set || {};
@@ -686,7 +752,17 @@ async function applyPatch(strapi, ctx, a) {
   // component, blocks, to-many relation, multiple media) replaced whole also drops what they added (fourth review N3).
   // Row ops edit the CURRENT list by content-bound keys (item 16b), so they stay mergeable without a version.
   const fieldWrites = [...new Set([...Object.keys(set), ...unset])];
-  if (fieldWrites.length && a.expected_version === undefined && !a.force) {
+  // without expected_version, if_match must name every field set or unset (readability is checked first)
+  const changedMatch = matchKeys ? await ifMatchChanged(strapi, pc, uid, raw, a.if_match) : [];
+  if (fieldWrites.length && a.expected_version === undefined && !a.force && matchKeys) {
+    const missing = fieldWrites.filter((f) => !matchKeys.includes(f));
+    if (missing.length) {
+      throw new WsError({
+        code: 'precondition_required', field: missing[0], fields: missing,
+        message: `Without expected_version, if_match needs an entry for every field set or unset; missing: ${missing.join(', ')}. Nothing was written.`,
+      });
+    }
+  } else if (fieldWrites.length && a.expected_version === undefined && !a.force) {
     // the nested lists such a set or unset would replace or clear are named in the same refusal (stream F, item 20)
     const nestedOf = [];
     for (const [f, v] of Object.entries(set)) {
@@ -694,6 +770,13 @@ async function applyPatch(strapi, ctx, a) {
       if (v === null) { if (doc[f] != null && RO.hasNestedList(strapi, attrs[f].component)) nestedOf.push(f); } else nestedOf.push(...RO.nestedListChanges(strapi, attrs[f].component, stripMeta(v), doc[f], f));
     }
     throw preconditionFields(fieldWrites, attrs, nestedOf);
+  }
+  if (changedMatch.length) {
+    throw await conflict(strapi, pc, uid, raw, a.expected_version, changedMatch, {
+      message: 'A field named in if_match changed after you read it. Nothing was written.',
+      fields_changed: changedMatch,
+      retry: { hint: IF_MATCH_HINT, expected_version: versionOfRaw(strapi, uid, raw) },
+    });
   }
   // Ref ops (1.0 hardening item 20): checked against the schema before anything else. Ops on a top-level relation or
   // media list or inside a single component are applied here; ops inside a row (key + path) go with the row ops.
@@ -812,7 +895,9 @@ async function applyPatch(strapi, ctx, a) {
     named[f] = r.named;
     rowSummary[f] = r.summary;
   }
-  if (nested.length && a.expected_version === undefined && !a.force) throw preconditionFields([], attrs, [...new Set(nested)]);
+  // a nested list inside a field if_match names is covered (the whole field was compared)
+  const nestedOpen = [...new Set(nested)].filter((p) => !(matchKeys && matchKeys.includes(p.split('.')[0])));
+  if (nestedOpen.length && a.expected_version === undefined && !a.force) throw preconditionFields([], attrs, nestedOpen);
   if (refChecks.length) await checkRefs(strapi, refChecks, ctx, new Set(), { locale });
   const refsView = refOps.length ? refOps.map((o) => ({
     op: o.op, field: o.field, ...(o.key !== undefined ? { key: o.key } : {}), ...(o.path != null ? { path: RO.segsOf(o.path).join('.') } : {}), ref: o.ref, status: refStatus.get(o),
@@ -820,8 +905,13 @@ async function applyPatch(strapi, ctx, a) {
   if (!Object.keys(data).length) {
     // only ref ops, and every one changed nothing: nothing is written (no new version, no receipt)
     const v = versionOfRaw(strapi, uid, raw);
-    return { ok: true, unchanged: true, documentId, locale: raw.locale || null, previous_version: v, version: v, changed: [], refs: refsView };
+    return {
+      ok: true, unchanged: true, documentId, locale: raw.locale || null, previous_version: v, version: v, changed: [], refs: refsView,
+      ...(a.publish ? { published: false, publish_skipped: 'nothing_changed' } : {}),
+    };
   }
+  // if_clean: draft vs live before this patch, under the draft's row lock
+  const clean = a.publish ? await cleanState(strapi, uid, documentId, locale, raw) : null;
 
   const subPaths = new Set(changedSubPaths(strapi, attrs, { set: a.set, unset: a.unset }, doc));
   for (const f of opFields) if (works[f]) for (const p of changedSubPathsOfWork(strapi, attrs, f, works[f], doc[f])) subPaths.add(p);
@@ -912,6 +1002,42 @@ async function applyPatch(strapi, ctx, a) {
     const view = async (r) => M.normalize(strapi, uid, await pc.sanitizeOutput(r));
     const moduleData = await MOD.afterWrite(ctx, info, await view(raw), await view(updatedRaw));
     if (moduleData) receipt.modules = moduleData;
+  }
+  // a clean draft the patch left as it was (same version) is already live
+  let pub = clean === 'clean' && receipt.version === receipt.previous_version ? 'nothing_changed' : clean;
+  if (pub === 'clean') {
+    // Strapi's publish validation (required, unique, ...), read-only: a draft it would refuse stays a draft, written
+    try {
+      await PREVIEW.validatePublish(strapi, uid, documentId, locale || raw.locale || null, updatedRaw);
+    } catch (e) {
+      if (!(e instanceof strapiErrors.ValidationError || e?.name === 'ValidationError')) throw e;
+      pub = 'publish_invalid';
+      const errs = (e.details && Array.isArray(e.details.errors)) ? e.details.errors : [];
+      receipt.publish_invalid_paths = [...new Set(errs.map((x) => (Array.isArray(x.path) ? x.path.join('.') : String(x.path || ''))).filter(Boolean))];
+    }
+  }
+  if (pub !== null && a.dry_run) {
+    // a dry run never calls Strapi's publish
+    receipt.would_publish = pub === 'clean';
+    if (pub !== 'clean') receipt.publish_skipped = pub;
+  } else if (pub === 'clean') {
+    // publish exactly the version just written, in this transaction
+    const pinfo = {
+      tool: a._tool || 'ws_patch', action: 'publish', uid, documentId, locale: locale || null, args: a, dryRun: false,
+      sanitize: (d) => pc.sanitizeOutput(d), raw: { before: updated, after: updated }, versions: { before: receipt.version, after: receipt.version },
+    };
+    await MOD.beforeWrite(ctx, pinfo);
+    await strapi.documents(uid).publish({ documentId, ...(locale ? { locale } : {}) });
+    receipt.published = true;
+    receipt.published_version = receipt.version;
+    if (MOD.hasAfterWrite()) {
+      const pview = M.normalize(strapi, uid, await pc.sanitizeOutput(updatedRaw));
+      const pdata = await MOD.afterWrite(ctx, pinfo, pview, pview);
+      if (pdata) receipt.modules = { ...(receipt.modules || {}), ...pdata };
+    }
+  } else if (pub !== null) {
+    receipt.published = false;
+    receipt.publish_skipped = pub;
   }
   if (a.dry_run) {
     // 1.0 stretch (c): what the write would change, field by field (the token's view; rows matched by key)
@@ -1153,9 +1279,12 @@ async function annotateReplay(strapi, tool, args, replay, implicit) {
 function versionsIn(tool, args) {
   const out = [];
   const add = (v) => { if (typeof v === 'string' && v) out.push(v); else if (v && typeof v === 'object' && !Array.isArray(v)) for (const x of Object.values(v)) if (typeof x === 'string' && x) out.push(x); };
+  // if_match is a precondition like a version
+  const match = (m) => { if (m && typeof m === 'object' && !Array.isArray(m) && Object.keys(m).length) out.push(`if_match:${M.canonical(m)}`); };
   add(args && args.expected_version);
   add(args && args.expected_source_version);
-  if (tool === 'ws_batch' && Array.isArray(args && args.items)) for (const it of args.items) add(it && it.expected_version);
+  match(args && args.if_match);
+  if (tool === 'ws_batch' && Array.isArray(args && args.items)) for (const it of args.items) { add(it && it.expected_version); match(it && it.if_match); }
   return out;
 }
 async function implicitKey(strapi, ctx, extra, tool, args, scoped) {
@@ -1403,7 +1532,7 @@ async function batchTarget(strapi, it) {
 }
 
 /** Fields that only a patch item takes (1.0 hardening item 2; fourth review N5: a publish item ignored them). */
-const PATCH_ONLY = ['set', 'unset', 'ops', 'force'];
+const PATCH_ONLY = ['set', 'unset', 'ops', 'force', 'if_match'];
 
 async function applyBatch(strapi, ctx, a) {
   const items = a.items || [];
@@ -1419,6 +1548,9 @@ async function applyBatch(strapi, ctx, a) {
     try {
       const item = { ...it, _tool: 'ws_batch', dry_run: a.dry_run };
       let r;
+      if (it.publish !== undefined) {
+        throw new WsError({ code: 'invalid', field: 'publish', message: 'ws_batch items take no publish argument: add a publish item after the patch item. Nothing was written.' });
+      }
       if (it.action === 'publish') {
         const extra = PATCH_ONLY.filter((k) => it[k] !== undefined);
         if (extra.length) {
@@ -1516,7 +1648,7 @@ module.exports = {
   // [bulk stream] also used by server/modules/{bulk,create,delete,replace,copy}
   isLocalized, isSingle, checkRefs, checkRefValue, checkComponentData, requestHash, RECEIPT_UID, DryRun,
   MEDIA, lockAndRead, conflict, assertVersion, RETRY_HINTS, resolveLocale, resolveDocumentId, permissionChecker, checkUid, hasDP, versionOfRaw, MOD,
-  keyError, EPOCH,
+  keyError, EPOCH, checkPublishArg,
   versionsIn, implicitKey, applyRowOps, preconditionFields, isUniqueViolation, liveDiff, uncoveredUids,
   lockBatchRows, ensureReceiptIndex, watchQueryErrors, withCaller, tokenScope, requireUniqueIndex, KEYS, resolvedArgs, resolvePos, WsError, BatchAbort, applyPatch, applyPublish, applyBatch, runWrite, batchAbortView, getDoc, writableUids, mapStrapiError, RETRY_HINT,
 };

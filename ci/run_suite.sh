@@ -4,7 +4,8 @@
 # test_versions_keys.py (versions and keys), test_phase2_c.py (modules); then tests/test_mcp_probe.py once per
 # builtinUpdates mode (Strapi restarted per mode) and scripts/compat_check.mjs, both of which fail the run on a failed
 # probe (hardening phase 2, item 13); then tests/test_phase4d.py in three restarts (phase 4: ws_find, allowForce,
-# history on by default).
+# history on by default). tests/test_jobs_approval.py (four phases) and tests/test_phase4_rest.py (phase 4: ws_job,
+# publish "if_clean", if_match; two phases) restart Strapi with their own config.
 # Every credential is generated here, per run, and never printed: app keys, salts, the admin user and all tokens.
 #
 #   APP_DIR=<prepared app> DB=sqlite|postgres|mysql ci/run_suite.sh
@@ -193,9 +194,21 @@ run_jobs_phase() {
 }
 export APP_DIR DB WORK
 FIRST=1
-for SUITE in ${SUITES:-test_plugin test_media test_l10n_history test_bulk_create test_locking test_versions_keys test_phase2_c test_undo_refops test_jobs_approval}; do
+# Phase 4 (tests/test_phase4_rest.py: ws_job, publish "if_clean", if_match): the suite's config, then a fresh Strapi with
+# approvals on (escalate.publish, adminTokens mcp-only), where a ws_bulk patch with publish "if_clean" waits for an admin.
+P4R_APPROVALS='{"automaticMax":4,"twoApproverAbove":8,"maxDocuments":30,"pendingPerToken":20,"samples":3,"approverQuietHours":0,"escalate":{"publish":true}}'
+for SUITE in ${SUITES:-test_plugin test_media test_l10n_history test_bulk_create test_locking test_versions_keys test_phase2_c test_undo_refops test_jobs_approval test_phase4_rest}; do
   SNAME=${SUITE//\//_}
-  if [ "$SUITE" = test_jobs_approval ]; then
+  if [ "$SUITE" = test_phase4_rest ]; then
+    if [ "$FIRST" != 1 ]; then cd "$APP_DIR"; stop; start; cd "$ROOT"; fi
+    FIRST=0
+    P4R_PHASE=main TEST_RESULTS="$OUT_JSON" python3 tests/test_phase4_rest.py > "$WORK/suite-$DB-$SNAME.txt" 2>&1; R1=$?
+    cd "$APP_DIR"; stop; export WRITESAFE_APPROVALS_JSON="$P4R_APPROVALS" WRITESAFE_ADMIN_TOKENS=mcp-only; start; cd "$ROOT"
+    P4R_PHASE=approvals TEST_RESULTS="$OUT_JSON" python3 tests/test_phase4_rest.py >> "$WORK/suite-$DB-$SNAME.txt" 2>&1; R2=$?
+    unset WRITESAFE_APPROVALS_JSON WRITESAFE_ADMIN_TOKENS
+    R=$R1; [ $R2 -ne 0 ] && R=$R2
+    awk '/^[0-9]+ passed, [0-9]+ failed/ { p += $1; f += $3 } END { printf "%d passed, %d failed (both phases)\n", p, f }' "$WORK/suite-$DB-$SNAME.txt" >> "$WORK/suite-$DB-$SNAME.txt"
+  elif [ "$SUITE" = test_jobs_approval ]; then
     FIRST=0
     run_jobs_phase approvals > "$WORK/suite-$DB-$SNAME.txt" 2>&1; R1=$?
     run_jobs_phase runner >> "$WORK/suite-$DB-$SNAME.txt" 2>&1; R2=$?
@@ -282,7 +295,7 @@ cat "$WORK"/suite-$DB-*.txt > "$WORK/suite-$DB.txt"
 # per-check results of the module suites, next to test_plugin's OUT_JSON (uploaded as CI artifacts)
 for F in tests/results/test_media-"$DB"*.json tests/results/test_l10n_history_"$DB".json tests/results/test_bulk_create-"$DB".json tests/results/test_locking-"$DB".json \
   tests/results/test_versions_keys-"$DB".json tests/results/test_row_key_import-"$DB".json tests/results/test_phase2_c-"$DB".json tests/results/test_mcp_probe-"$DB"-*.json \
-  tests/results/test_undo_refops-"$DB".json; do
+  tests/results/test_undo_refops-"$DB".json tests/results/test_phase4_rest-*-"$DB".json; do
   [ -f "$F" ] && cp "$F" "$(dirname "$OUT_JSON")/$(basename "${OUT_JSON%.json}")-$(basename "$F")"
 done
 echo "all suites: $PASS passed, $FAIL failed"

@@ -14,6 +14,11 @@
  *   POST /api/probe/lifecycle-counts {documentIds}                           -> db lifecycle events per page (bulk savepoints)
  *   POST /api/probe/features {}                                               -> {savepoint}: does this Strapi have db.savepoint
  *   POST /api/probe/memory                                                   -> process.memoryUsage() (heap, RSS)
+ *   POST /api/probe/bulk-config {timeBudgetMs?}                              -> set writesafe's bulk.timeBudgetMs in the running
+ *                                                                              app (null: back to the config file's value);
+ *                                                                              returns the value before. 1 ms makes every
+ *                                                                              ws_bulk / ws_replace call without max_chunks
+ *                                                                              run exactly one chunk (the time-budget path)
  * Column names are checked against Strapi's metadata; only api:: content types and known components are touched.
  * PROBE_LOCK_COVERAGE=true: a lifecycle subscriber on every component model counts component-row writes that run
  * inside a transaction holding a writesafe lock (the Document Service lock or the engine's) and those that do not.
@@ -127,6 +132,23 @@ const controller = ({ strapi }) => ({
   async lifecycleCounts(ctx) {
     const { documentIds } = ctx.request.body || {};
     ctx.body = { ok: true, counts: Object.fromEntries((documentIds || []).map((d) => [d, lifecycleCounts.get(d) || 0])) };
+  },
+  // A ws_bulk / ws_replace call runs chunks until the job is done, bulk.timeBudgetMs is used (read per call) or
+  // max_chunks chunks ran, and always at least one, so tests set 1 ms to exercise the time-budget path (one chunk per
+  // call without max_chunks), and restore the value after.
+  async bulkConfig(ctx) {
+    const body = ctx.request.body || {};
+    const { timeBudgetMs } = body;
+    if (timeBudgetMs !== undefined && timeBudgetMs !== null && !(Number.isSafeInteger(timeBudgetMs) && timeBudgetMs >= 1)) return ctx.badRequest('timeBudgetMs: an integer >= 1, or null');
+    const cfg = strapi.config.get('plugin::writesafe');
+    if (!cfg.bulk) cfg.bulk = {};
+    const before = cfg.bulk.timeBudgetMs ?? null;
+    if ('timeBudgetMs' in body) {
+      // null: delete the key (a key holding undefined would override the plugin's default in its settings spread)
+      if (timeBudgetMs === null) delete cfg.bulk.timeBudgetMs;
+      else cfg.bulk.timeBudgetMs = timeBudgetMs;
+    }
+    ctx.body = { ok: true, before, timeBudgetMs: cfg.bulk.timeBudgetMs ?? null };
   },
   async features(ctx) {
     ctx.body = { ok: true, savepoint: typeof strapi.db.savepoint === 'function' };
@@ -247,6 +269,7 @@ module.exports = {
         { method: 'POST', path: '/lifecycle-counts', handler: 'probe.lifecycleCounts', config: { policies: [] } },
         { method: 'POST', path: '/features', handler: 'probe.features', config: { policies: [] } },
         { method: 'POST', path: '/memory', handler: 'probe.memory', config: { policies: [] } },
+        { method: 'POST', path: '/bulk-config', handler: 'probe.bulkConfig', config: { policies: [] } },
       ],
     },
   },

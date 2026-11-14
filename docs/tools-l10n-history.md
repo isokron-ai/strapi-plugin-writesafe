@@ -325,6 +325,26 @@ conflict refused all of it):
   (it may still write chunks the undo would miss). Finish it first.
 - `dry_run` previews a new undo (a `receipt_id`); with `undo_job_id` it is refused (`invalid`): use
   `{undo_job_id, status_only: true}` to read a job. `status_only` without `undo_job_id` is refused too. Neither writes.
+- **ws_job** (1.0 hardening, phase 4; it comes with the `bulk` or `replace` module) covers undo jobs too, for their
+  owner only:
+  - `{action: "list"}` lists them with the token's ws_bulk and ws_replace jobs (`tool: "ws_undo"`, `undo_of`);
+  - `{action: "status", job_id}` is `ws_undo {undo_job_id, status_only: true}` (no `items` or `cursor`: an undo job's
+    status lists its conflicts);
+  - `{action: "undo", job_id}` with a finished ws_bulk or ws_replace job's id starts its undo job, as
+    `ws_undo {receipt_id: <job id>}` does (`dry_run`, `on_conflict`, `chunk_size`, `preview`, `max_chunks` and `agent`
+    as here); with an unfinished undo job's id it continues that job (only `max_chunks` and `agent` apply); with a
+    finished undo job's id it undoes that undo. A publish job is `unsupported`, a job that is not finished
+    `job_running`, a job that wrote nothing `not_found`.
+- **Cancel** (phase 4): `ws_job {action: "cancel", job_id: <undo job id>}` stops a running or stopped undo job. It
+  takes the job's row lock, so a chunk under way commits first; then the job is `cancelled`: what it reverted stays
+  reverted (its `totals` say how much), the rest is not undone, and its slot is free. The reply has `cancelled: true`
+  and a note; a job that is done or cancelled already is left as it is (`cancelled: false`). A cancelled undo job is
+  not resumed (`ws_undo {undo_job_id}` answers `job_cancelled`). To go on, undo the same receipt again: the new undo
+  job skips what is already undone (`already_undone`). `ws_job {action: "undo"}` with the cancelled undo job's own id
+  is not a resume: like any finished undo job, it starts the undo of that undo (what it reverted is put back).
+- ws_job comes with the `bulk` or `replace` module. With both off, an undo job (a receipt over 100 entries) is
+  continued with `ws_undo {undo_job_id}` and cannot be cancelled by the agent; it stops at its end or at a conflict
+  (`on_conflict: "stop"`).
 - needs a per-token identity (the request's Authorization header) and the receipts table's unique index, like bulk
   jobs; without them the undo of a job or of a receipt over 100 entries is refused (`unsupported`, saying so). Undo
   single documents with `documentId` instead.
@@ -501,14 +521,14 @@ receipt that touched an entry the token cannot read is refused (`forbidden`) wit
 `ws_undo {receipt_id}` reverts what that receipt changed: fields go back to their before values; for lists only the
 rows the write added, updated, removed or moved are reverted, so rows other writers added stay. A created document is
 deleted, a deleted one recreated (as a draft, same documentId). `item` undoes one batch item, `documentId` one document,
-and a bulk `job_id` the whole job. A document whose reverted fields or rows changed since is left alone and listed in
+and a bulk `job_id` the whole job (also `ws_job {action: "undo", job_id}`). A document whose reverted fields or rows changed since is left alone and listed in
 `conflicts` (`on_conflict: "skip"`, the default since the 1.0 hardening): `current`, `changed_since`, and `before`, the
 values the receipt replaced (fields the token can read), so the agent can put back its own change with ws_patch and keep
 the later one; the rest is undone. If nothing could be undone the reply is a `version_conflict`; `on_conflict: "stop"`
 refuses the whole undo at one conflict. The undo of a job (or of a single receipt with more than 100 entries) runs as a resumable
 undo job: chunks of 25 entries, each its own transaction, newest change first; `status: "running"` comes with an
 `undo_job_id` to call again, a killed process resumes from the last committed chunk, and `dry_run` shows the plan and
-the byte budget. The reply does not offer `force`; where the admin allows it (`allowForce`), `force: true` still overwrites the later change when a person asks
+the byte budget. `ws_job` lists, reads and cancels undo jobs (a cancelled one keeps what it reverted). The reply does not offer `force`; where the admin allows it (`allowForce`), `force: true` still overwrites the later change when a person asks
 for that. The undo has its own receipt and
 can itself be undone. Stored hashes are plain sha256 over the full draft (not an HMAC over the token's view), so a key
 rotation or a token that cannot read every field no longer makes every undo conflict. A created document is compared by

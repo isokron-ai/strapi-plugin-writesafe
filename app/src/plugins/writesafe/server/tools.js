@@ -89,6 +89,7 @@ const patchShape = (strapi) => ({
   set: L.obj(z.object({}).catchall(z.any())).optional().describe('Fields to set; needs expected_version. Scalars replace; a single component merges into its row (row kept); a list field (dynamic zone, repeatable, blocks, to-many relation, multiple media) is replaced whole. Rows you send with their `_key` keep their identity.'),
   unset: L.arr(z.array(z.string())).optional().describe('Fields to clear (null, or [] for lists); needs expected_version.'),
   ops: L.arr(z.array(op())).optional().describe('Row-level edits applied to the CURRENT list inside the write transaction, so rows another writer added survive. No expected_version needed. A key whose row someone edited since you read it is refused with stale_row_key, a removed row with row_not_found: read again. The reply gives new keys only for the rows it added or that you named (rows.<field>.added, rekeyed).'),
+  if_match: L.obj(z.object({}).catchall(z.any())).optional().describe('Instead of expected_version: {field: value you read}, top-level fields (compared whole), one entry per field you set or unset. A change to one of them: version_conflict (fields_changed); to other fields: no conflict.'),
   ...F.arg(z, L, 'Allow set and unset without expected_version (last write wins).'), // only with config.allowForce
 });
 
@@ -155,7 +156,8 @@ function register(strapi) {
       + 'Changes one draft atomically. Use ops for dynamic-zone, repeatable-component and blocks rows (add/update/remove/move by key) '
       + 'and single links of to-many relations and media (add/remove by ref), so other writers\' rows survive; use set/unset for fields, with expected_version. The write is refused if the document changed '
       + '(error.code version_conflict, with current_version, the current values and a retry hint). dry_run validates and rolls back. '
-      + 'A retry of a request with expected_version returns the first receipt; idempotency_key does the same for a request without one. Returns a compact receipt (ids, versions, changed fields, new row keys). '
+      + 'if_match checks only the fields you name. publish: "if_clean" also publishes if the draft had no other unpublished change. '
+      + 'A retry of a request with expected_version (or if_match) returns the first receipt; idempotency_key does the same for a request without one. Returns a compact receipt (ids, versions, changed fields, new row keys). '
       + `${G.RULE_READ} ${G.RULE_DATA}`,
     auth: policies(strapi, 'plugin::content-manager.explorer.update'),
     resolveInputSchema: () => F.strict(z, {
@@ -163,6 +165,7 @@ function register(strapi) {
       dry_run: L.bool(z.boolean()).optional().describe('Validate and run the write, then roll it back. Nothing is stored. Strapi lifecycle hooks and Document Service middlewares do run during it (their database work is rolled back; webhooks are not sent). The reply adds `diff`: each touched field before and after (rows by key).'),
       idempotency_key: z.string().min(8).max(200).optional().describe('Unique per intended change; reuse it only to retry the same request. Scoped to this token, tool, document and locale.'),
       return: z.enum(['receipt', 'full']).optional().describe('receipt (default) or full: also return the updated document.'),
+      publish: z.enum(['if_clean']).optional().describe('Also publish in the same transaction, only if the draft equalled the live version before this patch; else published: false with publish_skipped. Needs publish permission.'),
       ...MOD.writeArgs(z), // [l10n/history] e.g. `agent` (history module)
     }),
     resolveOutputSchema: () => z.object({}).passthrough(),

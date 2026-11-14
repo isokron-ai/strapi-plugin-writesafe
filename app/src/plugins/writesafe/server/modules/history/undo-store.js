@@ -80,4 +80,4 @@ async function activeState(strapi, id) {
   return j && ACTIVE.includes(j.state) ? j.state : null;
 }
 
-module.exports = { ready, create, load, lock, save, addChunk, items, findActive, activeState, toRow, fromRow, slotOf };
+module.exports = { ready, create, load, lock, save, addChunk, items, findActive, activeState, toRow, fromRow, slotOf, ACTIVE };

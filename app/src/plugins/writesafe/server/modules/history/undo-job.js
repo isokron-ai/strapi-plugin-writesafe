@@ -326,6 +326,37 @@ async function reopen(strapi, ctx, E, extra, jobId) {
   }, extra);
 }
 
+/** A cancelled undo job is not resumed (a new undo of the same receipt starts a new job). */
+function resumeCheck(job, E = require('../../engine')) {
+  if (job && job.status === 'cancelled') {
+    throw new E.WsError({ code: 'job_cancelled', undo_job_id: job.job_id, message: 'This undo job was cancelled: what it reverted stays reverted. Undo the same receipt again to go on (a new undo job).' });
+  }
+}
+
+const NOTHING = { items: [], conflicts: [], skipped: [], failed: [] };
+/** ws_job cancel: under the row lock (a running chunk finishes first); what was reverted stays, the slot is freed. */
+async function cancel(strapi, ctx, E, extra, jobId, owner) {
+  let job = null;
+  let cancelled = false;
+  await E.runWrite(strapi, ctx, 'ws_undo', {}, async () => {
+    job = await S.lock(strapi, jobId);
+    if (!job || job.owner !== owner) throw new E.WsError({ code: 'not_found', message: `No undo job ${jobId} for this token.`, job_id: jobId });
+    if (S.ACTIVE.includes(job.status)) {
+      job.status = 'cancelled';
+      job.stopped = undefined;
+      job.updated_at = new Date().toISOString();
+      cancelled = true;
+      await S.save(strapi, job); // an inactive job holds no slot
+    }
+    return {};
+  }, extra);
+  const v = view(job, NOTHING);
+  return {
+    ...v, cancelled,
+    note: cancelled ? 'Cancelled: what it reverted is kept (totals); the rest was not undone.' : `Nothing to cancel: the undo job is ${job.status}.`,
+  };
+}
+
 /** status_only: the job and every conflict it left, with the before values this token may read. */
 async function statusView(strapi, ctx, E, job) {
   const last = new Map(); // an entry retried after a stop has two item rows: its latest state counts
@@ -420,6 +451,7 @@ async function handle(strapi, ctx, E, a, extra) {
     const job = await S.load(strapi, a.undo_job_id);
     if (!job || job.owner !== owner) throw new E.WsError({ code: 'not_found', message: `No undo job ${a.undo_job_id} for this token.`, undo_job_id: a.undo_job_id });
     if (a.status_only) return statusView(strapi, ctx, E, job);
+    resumeCheck(job, E);
     if (job.status === 'stopped') await reopen(strapi, ctx, E, extra, job.job_id);
     return run(strapi, ctx, E, extra, job.job_id, owner, a.max_chunks);
   }
@@ -452,4 +484,7 @@ async function handle(strapi, ctx, E, a, extra) {
   return run(strapi, ctx, E, extra, job.job_id, owner, a.max_chunks);
 }
 
-module.exports = { handle, route, sourceStatus, nextEntries, scopeKey, gather, sizeOf, rowView, storedError, INLINE_MAX, HINT_RUNNING, HINT_CONFLICTS, HINT_STOPPED };
+module.exports = {
+  handle, route, sourceStatus, nextEntries, scopeKey, gather, sizeOf, rowView, storedError, INLINE_MAX, HINT_RUNNING, HINT_CONFLICTS, HINT_STOPPED,
+  statusView, view, cancel, resumeCheck, callerId, TOTALS,
+};

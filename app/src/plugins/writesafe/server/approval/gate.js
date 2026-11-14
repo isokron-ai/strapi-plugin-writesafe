@@ -77,12 +77,16 @@ async function ownerChangedAt(strapi, ownerUserId) {
   }
 }
 
-// job: { uid, action, spec } (a dry run's description or a G job)
-const tierOf = (strapi, job, count) => T.tierFor(count, { action: job.action, relations: editsRelations(strapi, job) }, C.approvalSettings(strapi));
+// job: { uid, action, spec } (a dry run's description or a G job); a patch with publish "if_clean" counts as a publish
+function opOf(strapi, job) {
+  const publishes = Boolean(job.spec && job.spec.publish === 'if_clean');
+  return { action: publishes ? 'publish' : job.action, relations: editsRelations(strapi, job) };
+}
+const tierOf = (strapi, job, count) => T.tierFor(count, opOf(strapi, job), C.approvalSettings(strapi));
 
 const REASON = {
   count: (n, s) => `more than the ${s.automaticMax} documents a job may change without approval`,
-  publish: () => 'a bulk publish, which this server has an admin approve first (approvals.escalate.publish)',
+  publish: () => 'a bulk publish (or a bulk patch with publish "if_clean"), which this server has an admin approve first (approvals.escalate.publish)',
   relations: () => 'a bulk edit of a to-many relation, which this server has an admin approve first (approvals.escalate.relations)',
 };
 
@@ -112,7 +116,7 @@ function approvalReply(strapi, req, job) {
         + 'Nothing you send can approve it. Tell the user the job is waiting for approval. Nothing was written.',
     },
     next: {
-      hint: runner ? `It starts on the server by itself once approved. Call ${tool} with {job_id, status_only: true} to follow it.`
+      hint: runner ? 'It starts on the server by itself once approved. Call ws_job {action: "status", job_id} to follow it.'
         : `Once approved, call ${tool} with only {job_id} to start it. Until then that call reports the approval status.`,
       job_id: g.job_id,
     },
@@ -211,7 +215,7 @@ const gate = {
     if (job.status === 'awaiting_approval') {
       const rid = job.approval && job.approval.request_id;
       const req = rid ? await C.ST.service.get(rid) : null;
-      if (!req) return { reply: await errorReply(strapi, row, 'approval_missing', 'This job has no approval request (it was not stored). Cancel it with {job_id, control: "cancel"} and start a new one.') };
+      if (!req) return { reply: await errorReply(strapi, row, 'approval_missing', 'This job has no approval request (it was not stored). Cancel it with ws_job {action: "cancel", job_id} and start a new one.') };
       if (req.status === 'approved') {
         try {
           const r = await C.activate(strapi, job, rid);
@@ -264,7 +268,7 @@ const gate = {
     if (job.status === 'paused') out.pause_reason = job.pause_reason || null;
     if (job.runner && job.status === 'running' && C.runnerActive()) {
       out.runner = true;
-      out.next = { hint: `Running on the server in the background. Call ${job.tool || 'ws_bulk'} with {job_id, status_only: true} to follow it.`, job_id: job.job_id };
+      out.next = { hint: 'Running on the server in the background. Call ws_job {action: "status", job_id} to follow it.', job_id: job.job_id };
     }
     return out;
   },
@@ -282,4 +286,4 @@ function install(strapi) {
   require('../modules/_bulk/jobs').setHooks({ gate, chunkGuard });
 }
 
-module.exports = { install, gate, chunkGuard, editsRelations, approvalView, unsafeToken, UNSAFE_ACTIONS, filterRecord, MAX_FILTER_CHARS };
+module.exports = { install, gate, chunkGuard, editsRelations, opOf, approvalView, unsafeToken, UNSAFE_ACTIONS, filterRecord, MAX_FILTER_CHARS };

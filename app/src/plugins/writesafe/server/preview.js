@@ -2,32 +2,7 @@
 
 /**
  * True previews for the ws_publish and ws_delete dry runs (1.0 hardening phase 2, item 10; fourth review N7).
- *
- * rc.2 answered a publish or delete dry run by calling Strapi's real documents().publish / delete inside the write
- * transaction and rolling it back. Phase 0 (test 1) showed that Strapi already holds webhooks and `entry.*` events until
- * the commit, so a rollback never fires them, but Document Service middlewares and database lifecycle subscribers run
- * inside the transaction: any plugin that does outside I/O from them (a search index, a cache purge, a CDN call) did it
- * on every dry run. The publish and delete dry runs now never call Strapi's publish or delete. They compute the answer:
- *
- *   publish  the version check, the permission check and the live diff as before, plus Strapi's own publish validation
- *            (required fields, lengths, patterns, unique values among published entries, relations that must exist),
- *            run through strapi.entityValidator exactly as Strapi's publish runs it, without writing anything. A draft
- *            that the real publish would refuse is refused by the dry run with the same `invalid` error.
- *   delete   the version and permission checks for every locale, what would be deleted, and the `recreate` arguments.
- *
- * Where the publish preview can differ from a real publish (review of the phase 2 C PR; none of them makes a write
- * unsafe, a real publish still validates):
- *   - a ws_batch or ws_bulk dry run publishing two documents with the same unique value passes; the real run refuses the
- *     second (earlier items are not really published in a preview, so the unique check cannot see them);
- *   - with api.documents.strictRelations, a required relation whose target has no published version passes here (the
- *     real publish maps relations to published targets first);
- *   - the first publish of a locale whose sibling is already published validates the draft's non-localized values,
- *     where Strapi validates the sibling's published ones.
- *
- * Patch dry runs (ws_patch, ws_batch patch items, ws_localize, ws_undo, ws_create, ws_replace, bulk previews) still run the
- * real write and roll it back: the write is what produces the diff, row keys and Strapi's validation of the exact data.
- * So Document Service middlewares and lifecycle hooks DO run in those dry runs (their database work is rolled back;
- * webhooks and entry.* events are not sent). That is documented on every dry_run argument and in the README.
+ * Design notes: docs/internals.md, section "server/preview.js".
  */
 const M = require('./model');
 

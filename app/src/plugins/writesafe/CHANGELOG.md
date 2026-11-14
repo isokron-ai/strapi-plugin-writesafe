@@ -8,6 +8,14 @@ the Upgrading notes below are complete.
 ## Unreleased (1.0 hardening)
 
 ### Summary
+- **Jobs, `publish: "if_clean"`, `if_match`** (phase 4): `ws_job` lists, reads, cancels and undoes the token's own
+  ws_bulk, ws_replace and undo jobs (undo jobs can now be cancelled). `publish: "if_clean"` on ws_patch and on ws_bulk
+  patch and ws_replace jobs also publishes in the same write, only when the draft had no other unpublished change.
+  `if_match` on ws_patch and ws_batch patch items checks only the fields written, instead of `expected_version`.
+  **(contract)** ws_bulk and ws_replace refuse `status_only`, `items`, `cursor` and `control: "cancel"` (`invalid`,
+  naming ws_job); `max_chunks` stays on them; one more tool when `bulk` or `replace` is on.
+  Reference: [reference.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#jobs-ws_job-with-bulk-or-replace),
+  [tools-bulk-create.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/tools-bulk-create.md).
 - **Approvals and the job runner** (phase 4, stream G): admin approval tiers for bulk jobs above `bulk.maxDocuments`
   (needs `adminTokens: 'mcp-only'`), the admin page "Write-safe jobs" with a kill switch, and an in-Strapi job runner
   (off by default). **(contract)** Above `bulk.maxDocuments` ws_bulk/ws_replace answer `approval_required` instead of
@@ -43,6 +51,17 @@ the Upgrading notes below are complete.
 
 ### Upgrading
 
+#### Jobs, `publish: "if_clean"`, `if_match` (phase 4)
+- **Agents and scripts that call ws_bulk or ws_replace:** read a job with `ws_job {action: "status", job_id}` (same
+  `items` and `cursor`) instead of `{job_id, status_only: true}`, and cancel it with `ws_job {action: "cancel", job_id}`
+  instead of `{job_id, control: "cancel"}`. The old arguments are refused with `invalid`, naming ws_job; nothing runs.
+  `{job_id}`, `{job_id, max_chunks}` (and `max_chunks` on the start) and `{job_id, control: "resume"}` stay.
+- **Approvers:** approving a patch or replace job with `publish: "if_clean"` needs the publish permission too.
+  ws_undo keeps its arguments.
+- **tools/list:** `ws_job` is one more tool when the `bulk` or `replace` module is on; the default modules add none.
+- **Database:** new integer columns `writesafe_bulk_jobs.n_published` and `.n_publish_skipped` (created on start) and
+  an index on `writesafe_bulk_jobs.owner` (created on the first job).
+
 #### Approvals and the job runner (stream G)
 - New tables `writesafe_approval_requests`, `writesafe_approval_decisions`, `writesafe_job_leases`; new columns
   `writesafe_bulk_jobs.approval` (json) and `.runner` (boolean). Created on the first start.
@@ -60,7 +79,7 @@ the Upgrading notes below are complete.
 #### Bulk jobs (stream E)
 - **Agents and scripts that call ws_bulk or ws_replace:** call with `dry_run: true` first and start with the returned
   `plan_token`; drop `idempotency_key` (send the same start again to recover a lost reply); give ws_bulk a filter or
-  `allow_all: true`; handle `paused` (`control: "resume"` / `"cancel"`) and `job_running`.
+  `allow_all: true`; handle `paused` (`control: "resume"`, or cancel with ws_job since phase 4) and `job_running`.
 - **Config:** an explicit `bulk.maxDocuments` above 100,000 stops the start; `replace.scanMax` keeps working (rename it
   to `maxScanDocuments`).
 - **Database:** Strapi creates the two new tables on start; the plugin adds their indexes on the first job. rc.2 jobs

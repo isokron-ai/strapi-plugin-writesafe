@@ -46,9 +46,9 @@ All of them except `ws_schema` take `uid`, an `api::` collection type or single 
 |---|---|
 | `ws_schema` | (1.0) Read-only. Without `uid`: the covered types. With `uid`: every field the token can read (type, required, localized, how ws_patch edits it, `write: false` when it cannot update it) and the shape of every component and dynamic-zone block used, nested ones included. About 4 KB for the test app's page type. |
 | `ws_get` | Reads the draft. Returns its `version` token, the data with a `_key` on every component row, and `rows`: the keys of every list field. `fields` limits the output. `compare: "published"` (1.0) adds `published`: how the live version differs from this draft, field by field. |
-| `ws_patch` | Changes one draft in one transaction. `set` and `unset` change fields and need `expected_version` (or `force`). `ops` edits list rows and needs no version. Also takes `dry_run` (1.0: with a field-by-field `diff`), `idempotency_key` and `return: "full"`. |
+| `ws_patch` | Changes one draft in one transaction. `set` and `unset` change fields and need `expected_version`, an [`if_match`](#if_match-per-field-preconditions) entry for every field they write, or `force`. `ops` edits list rows and needs no version. [`publish: "if_clean"`](#publish-if_clean) also publishes the result when the draft had no other unpublished change. Also takes `dry_run` (1.0: with a field-by-field `diff`), `idempotency_key` and `return: "full"`. |
 | `ws_publish` | Publishes the draft only if it is still the `expected_version` you reviewed. With `dry_run` (1.0) the reply's `diff` says what publishing would change on the live version. |
-| `ws_batch` | Runs up to 100 patch or publish items in one transaction. All commit or none do (`all_or_nothing`). Every item gets a status. Takes `dry_run` and one `idempotency_key` for the whole batch. A publish item needs `expected_version`, except after an earlier item of the same batch patched that document with `expected_version`: it then publishes exactly what the batch's patches left. A publish item with `set`, `unset`, `ops` or `force` is refused (`invalid`). A token with only the publish permission may send publish items. |
+| `ws_batch` | Runs up to 100 patch or publish items in one transaction. All commit or none do (`all_or_nothing`). Every item gets a status. Takes `dry_run` and one `idempotency_key` for the whole batch. A publish item needs `expected_version`, except after an earlier item of the same batch patched that document with `expected_version`: it then publishes exactly what the batch's patches left. A publish item with `set`, `unset`, `ops` or `force` is refused (`invalid`). A token with only the publish permission may send publish items. Patch items take `if_match` (not `publish`: add a publish item after the patch item). |
 
 ### Row ops
 
@@ -101,8 +101,9 @@ All of them except `ws_schema` take `uid`, an `api::` collection type or single 
 
 ### Set and versions
 
-The rule (1.0 hardening items 3 and 16c): **`set` and `unset` need `expected_version`, or `force: true`; row `ops`
-never do.** Without either, a `set` or `unset` is refused with `precondition_required` and nothing is written. A field
+The rule (1.0 hardening items 3 and 16c): **`set` and `unset` need `expected_version`, an `if_match` entry for every
+field they write (phase 4, [below](#if_match-per-field-preconditions)), or `force: true`; row `ops` never do.** Without
+one of them, a `set` or `unset` is refused with `precondition_required` and nothing is written. A field
 set from a stale read overwrites a colleague's newer value; a list replaced whole also drops the rows, links or files
 they added. Row ops edit the current list by content-bound keys, so they stay mergeable without a version.
 
@@ -142,6 +143,70 @@ token version, the content type uid, the documentId, the locale and a **semantic
   hash a token could test guesses for a hidden field against it.
 - Because the version is semantic, a document that returns to exactly the content you read has your version again, and
   a write with it applies (see [Idempotency](#idempotency) for retries).
+
+### if_match: per-field preconditions
+
+`expected_version` covers the whole document: a colleague's edit to any other field since the read refuses the write,
+and the agent reads again. `if_match` (1.0 hardening, phase 4) is the mergeable path for scalar edits: it checks only
+the fields the write depends on.
+
+```jsonc
+// read: ws_get → data.summary is "Old summary"; then, whatever else changed meanwhile:
+ws_patch {"uid": "api::page.page", "documentId": "…", "set": {"summary": "New summary"}, "if_match": {"summary": "Old summary"}}
+```
+
+- `if_match` maps top-level field names to the values read with `ws_get` (its `data`). It replaces `expected_version`
+  when every field in `set` and `unset` has an entry; a field written without one is `precondition_required` (its
+  name in `fields`). It may name more fields than the write touches (a field the new value depends on).
+- The write applies only while every named field still holds that value. The check runs under the document's row lock,
+  in the write's transaction, on the semantic form the version uses: component rows without ids, relations as
+  documentIds, media by reference, `null` and `[]` alike for list fields. A change to a field it does not name never
+  blocks it, so two agents editing different fields of one document both land without a re-read.
+- Otherwise the reply is `version_conflict` with `fields_changed` (the named fields that differ), `current` holding
+  those fields only (filtered for the token), `current_version` and `retry: {hint, expected_version}`. Nothing is
+  written. The hint says to re-apply only the agent's own change to the new value, never to resend the old copy.
+- A component, a list or a relation is compared as a whole: name `seo`, not `seo.metaTitle` (a dotted path is
+  `invalid`). A relation is compared by documentId, as ws_get shows it: a link moved to another locale of the same
+  target document still matches (`expected_version` catches that). For lists, row ops by key stay the mergeable path; an `if_match` on a list field asks for the whole list
+  unchanged.
+- The token must be able to read every field it names (for a component, every sub-field): otherwise the call is
+  `forbidden` and nothing is compared, whatever the value sent, so `if_match` cannot be used to guess a hidden value.
+- Not with `force` (`invalid`). With `expected_version` both are checked. Row `ops` in the same call keep their own
+  rules (row keys). Unknown fields and an empty object are `invalid`.
+- ws_batch patch items take it too; an item whose `if_match` fails refuses the whole batch, like a version conflict.
+  A patch item checked by `if_match` alone does not vouch for a later publish item of the same document: that publish
+  item needs its own `expected_version`.
+- Retries: a request with `if_match` sent again within 10 minutes is answered with its first receipt (`replayed`), as
+  with `expected_version` (see [Idempotency](#idempotency)).
+
+### publish: "if_clean"
+
+`ws_patch` (and a `ws_bulk` patch job or a `ws_replace` job, see `tools-bulk-create.md`) takes `publish: "if_clean"`
+(1.0 hardening, phase 4): the patch is written to the draft as usual and, in the same transaction, the document is
+published only if its draft was identical to the live version before the patch (the semantic hash the version uses,
+without publish-state fields). Otherwise the draft is written and left unpublished, and the reply says why:
+
+| Reply | When |
+|---|---|
+| `published: true`, `published_version` | The draft had no other unpublished change: exactly the version just written is live. |
+| `published: false`, `publish_skipped: "draft_had_other_changes"` | Someone else's change is waiting in the draft; publishing would make it live without review. Publish it on its own with ws_publish after a review. |
+| `published: false`, `publish_skipped: "no_live_version"` | The document was never published (or was unpublished). |
+| `published: false`, `publish_skipped: "nothing_changed"` | The patch changed nothing, so there is nothing new to publish. |
+| `published: false`, `publish_skipped: "publish_invalid"`, `publish_invalid_paths` | Strapi's publish validation (required fields, unique values, ...) would refuse the new draft. The draft is written; nothing is published. |
+
+- It needs the publish permission: a token without it is refused (`forbidden`) before anything is written, also on a
+  dry run. Types without draft & publish refuse it (`invalid`).
+- A dry run never publishes: it returns `would_publish` (and `publish_skipped` when it would not). Both runs check the
+  new draft with Strapi's publish validation first (read-only, as the ws_publish dry run does).
+- "Identical" compares the whole draft, fields the token cannot read included, so `draft_had_other_changes` can stem
+  from a hidden field (it says only that some field differs, never which). A document that links to a target with no
+  published version always differs from its live version (Strapi's live version leaves such links out), so it is
+  skipped.
+- It never publishes over a conflict: the version (or `if_match`) check runs first, and a refused patch publishes
+  nothing. With `force` (where `allowForce` allows it) the draft check still applies.
+- ws_batch items take no `publish`: put a publish item after the patch item (it publishes what that patch left).
+- ws_undo of the receipt reverts the draft and lists the publish as skipped (a publish is never undone): what was
+  published stays live until the next publish.
 
 ### Row keys: what they can and cannot hit (1.0)
 
@@ -212,7 +277,8 @@ only in data fields (`current`, `before`, `value`, `declared_type`, ...), never 
 The codes are:
 
 - `version_conflict`: carries `current_version`, `current` (the current values of the fields you touched),
-  `current_rows`, and a `retry` block that depends on the action:
+  `current_rows`, and a `retry` block that depends on the action (an `if_match` refusal adds `fields_changed`, and
+  `current` holds only those fields):
   - a patch: `retry: {hint, expected_version}`. The hint tells the agent to re-apply only its own change to `current`
     and not resend its earlier copy.
   - a publish, a delete, or a translation into a target locale that changed: `retry: {hint}` with no version. The draft
@@ -415,6 +481,10 @@ without the update permission the built-in tools also use. So the plugin interce
 | `guard` (default since the 1.0 hardening) | listed; refuses dynamic zone, repeatable, blocks and component fields, and any value of a to-many relation other than an object with only `connect`/`disconnect` (a list, an id, `null`, `set`), and any value of a multiple media field (`use_ws_patch`); passes scalar fields, to-one relations, single media and `connect`/`disconnect` | creates freely; on existing content same as update | not listed | 73 tools, 258.1 KB (no `force`) |
 | `hide` | not listed | only creates the first document | not listed | 60 tools, 201.3 KB (no `force`) |
 
+With every module on (the CI configuration), `ws_job` (1.0 hardening, phase 4) comes with the `bulk` or `replace`
+module: `keep` and `guide` list 87 tools, `guard` 73 and `hide` 53, one more each than before it. With the default
+modules the counts above are unchanged; `if_match` and `publish` on ws_patch add about 1.7 KB to each mode's tools/list.
+
 `create_<type>` and `delete_<type>` (since the phase 2 hardening): `guide` and `guard` add a note pointing to ws_create /
 ws_delete (or a caution when those modules are off); with the `delete` module on, `delete_<type>` is not listed in
 `guard` and `hide` (ws_delete is version-checked); with the `create` module on, `create_<type>` is not listed in `hide`.
@@ -574,6 +644,25 @@ The reply above (Strapi 5.62.0, from `tests/test_phase4d.py`, whose call filtere
 it stays a value under `data`, which the description and the server instructions name as data, never instructions.
 More pages add `next_cursor`; matches the token cannot read count in neither `total` nor `matches`.
 
+### Jobs: ws_job (with `bulk` or `replace`)
+
+One tool for the jobs a token started (1.0 hardening, phase 4): ws_bulk and ws_replace jobs and undo jobs. It is
+registered once when the `bulk` or the `replace` module is on.
+
+| `action` | Arguments | What it does |
+|---|---|---|
+| `list` | `limit` (1 to 100, default 20), `cursor` | The token's jobs, newest first: `job_id`, `tool`, `action`, `uid`, `status`, `total`, `totals`, `created_at`, `updated_at`, `undoable` (an undo job: `undo_of`). No content. `next_cursor` when there are more. |
+| `status` | `job_id`, `items` (`"problems"` default, or `"all"`), `cursor` | One job and its documents, 200 per page (`items_next.cursor`); an undo job: its state and conflicts with their before values. Writes nothing. |
+| `cancel` | `job_id` | Stops a running, paused, stopped or `awaiting_approval` job after its current chunk; what it wrote stays. Also an undo job, and a job an admin paused (only an admin resumes that). |
+| `undo` | `job_id`, `on_conflict`, `chunk_size`, `max_chunks`, `dry_run`, `preview`, `agent` | Reverts what a finished job wrote as a resumable undo job (the ws_undo code); with an undo job's id, continues it. |
+
+Each action takes only its own arguments (any other is `invalid`). Every action sees only the token's own jobs: another
+token's job id is `not_found`, whether it exists or not. ws_job takes no `force`. The approval gate, `bulk.paused` and
+the admin pauses still apply: ws_job cannot resume a job. Continuing or resuming a job stays on its own tool
+(`ws_bulk {job_id}`, optionally with `max_chunks` to run at most that many chunks in the call, and
+`{job_id, control: "resume"}`). Details: `docs/tools-bulk-create.md` (jobs) and
+`docs/tools-l10n-history.md` (undo jobs).
+
 ### Writing a module
 
 A module is a folder `server/modules/<name>/index.js` exporting `{ name, tools(strapi, api), hooks: { beforeWrite,
@@ -589,7 +678,8 @@ One schema for the core and every module (`writesafe_receipts`): `key` (idempote
 exist only for writes with an idempotency key and in-flight claims. Bulk jobs live in their own tables since the 1.0
 hardening: `writesafe_bulk_jobs` (one row per job: owner, type, locale, action, change, filter, state, cursor,
 counters, the active slot) and `writesafe_bulk_items` (one row per document: ordinal, documentId, planned version,
-outcome), with unique indexes on the job id, the active slot and (job, ordinal).
+outcome), with unique indexes on the job id, the active slot and (job, ordinal), and an index on the owner (ws_job
+`list`, phase 4).
 
 Retention (`retention`, 1.0 hardening; runs at startup and every `pruneEverySeconds`):
 - an idempotency key row is kept `keyHours` (72). Then it is deleted, or, while the history module still keeps that

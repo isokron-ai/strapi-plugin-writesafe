@@ -13,6 +13,7 @@
  * - Running it starts a ws_bulk job over the documents that matched. Each document is re-read under lock in its chunk
  *   and the replacement is computed again from its current text, then written with that version as the precondition.
  *   Component and zone rows are updated by key (ids kept); a document whose text no longer matches is "unchanged".
+ * - publish: "if_clean": as ws_bulk patch jobs (engine applyPatch).
  */
 const vm = require('node:vm');
 const { performance } = require('node:perf_hooks');
@@ -251,7 +252,9 @@ function chunkReplacer(chunk, spec) {
 B.registerAction('replace', {
   permission: 'update',
   events: ['entry.update'],
-  validate() {},
+  validate(strapi, uid, spec) {
+    E.checkPublishArg(strapi, uid, spec);
+  },
   chunkFull(chunk) {
     return Boolean(chunk.replacer) && chunk.replacer.left() < replaceCfg.current.regexTimeoutMs;
   },
@@ -264,8 +267,9 @@ B.registerAction('replace', {
     const w = await E.applyPatch(strapi, ctx, {
       _tool: job.tool, uid: job.uid, documentId, locale: job.locale, expected_version: version,
       ...(Object.keys(r.set).length ? { set: r.set } : {}), ...(r.ops.length ? { ops: r.ops } : {}),
+      ...(job.spec.publish ? { publish: job.spec.publish } : {}), ...(preview ? { dry_run: true } : {}),
     });
-    return { documentId, status: 'ok', version: w.version, replaced: r.count };
+    return B.publishItem({ documentId, status: 'ok', version: w.version, replaced: r.count }, job.spec, w, preview);
   },
 });
 
@@ -280,6 +284,8 @@ async function describe(strapi, ctx, a, cfg) {
   E.checkUid(strapi, a.uid);
   const rcfg = cfg.replace;
   const spec = { find: a.find, replace: a.replace, regex: Boolean(a.regex), flags: a.flags, case_sensitive: a.case_sensitive, fields: a.fields };
+  // only when given: a plan without publish keeps its rc.2 spec hash
+  if (a.publish !== undefined) spec.publish = a.publish;
   makeReplacer(spec, rcfg); // refuses a bad pattern before anything is read
   const pcw = E.permissionChecker(strapi, ctx, a.uid);
   let targets = resolveTargets(strapi, a.uid, a.fields);
@@ -344,9 +350,11 @@ function toolDef(strapi, h, cfg) {
       + 'Scope it with filters (Strapi filter syntax) and fields (paths like "title", "seo.metaTitle", "items.label", "sections.body", "body"). '
       + 'Literal by default; regex: true for a regular expression ($1 in replace refers to groups). Run dry_run first: it returns the matching documents, '
       + 'match counts per path, before/after samples and a plan_token. Then send the same call without dry_run, with plan_token: it runs as a resumable ws_bulk job on exactly the documents the dry run found; '
-      + 'each document is re-read under lock and replaced in its current text with a version precondition, rows keep their ids. Continue with {job_id} if status is "running".',
+      + 'each document is re-read under lock and replaced in its current text with a version precondition, rows keep their ids. Continue with {job_id} if status is "running". '
+      + 'publish: "if_clean" also publishes each changed document whose draft had no other unpublished changes. '
+      + 'ws_job reads, lists, cancels or undoes jobs.',
     auth: h.policies(strapi, 'plugin::content-manager.explorer.update'),
-    resolveInputSchema: () => z.object({
+    resolveInputSchema: () => B.jobSchema({
       uid: h.uidSchema(strapi).optional().describe('Content type UID (not needed with job_id).'),
       locale: h.localeSchema,
       find: z.string().optional().describe('Text to find (literal), or a regular expression with regex: true.'),
@@ -356,11 +364,13 @@ function toolDef(strapi, h, cfg) {
       case_sensitive: L.bool(z.boolean()).optional().describe('Default true.'),
       fields: L.arr(z.array(z.string())).optional().describe('Text paths to search, e.g. ["title", "sections.body", "items.label", "body"]. A top-level name covers all its text paths. Default: all.'),
       filters: L.obj(z.object({}).catchall(z.any())).optional().describe('Strapi filters narrowing the documents scanned.'),
+      publish: z.enum(['if_clean']).optional().describe('"if_clean": also publish each changed document in the same write if its draft equalled its live version before; else it stays a draft (publish_skipped). Needs publish permission.'),
       ...B.jobArgs(L),
-    }).strict(),
+    }),
     resolveOutputSchema: () => z.object({}).passthrough(),
     createHandler: (s, context) => async ({ args, extra }) => {
       try {
+        B.refuseMoved(args);
         if (!args.job_id && (args.find === undefined || args.replace === undefined)) throw new WsError({ code: 'invalid', message: 'find and replace are required (or give job_id to resume a job).' });
         const r = await B.handle(strapi, context, extra, 'ws_replace', args, cfg.bulk, (st, ctx, a) => describe(st, ctx, a, cfg));
         return r.ok === false ? h.fail(r) : h.ok(r);
@@ -371,7 +381,11 @@ function toolDef(strapi, h, cfg) {
 
 module.exports = {
   name: 'replace',
-  tools: (strapi, api) => [toolDef(strapi, U.helpers(api), U.settings(strapi))],
+  // ws_job comes with bulk; with bulk off, replace registers it
+  tools: (strapi, api) => [
+    toolDef(strapi, U.helpers(api), U.settings(strapi)),
+    ...(E.MOD.enabled().includes('bulk') ? [] : [require('../_bulk/job-tool').toolDef(strapi, U.helpers(api), U.settings(strapi))]),
+  ],
   toolDef, makeReplacer, compute, textTargets, describe, chunkReplacer, resolveTargets, permPath,
   _setConfig: (c) => { replaceCfg.current = c; }, // tests
 };

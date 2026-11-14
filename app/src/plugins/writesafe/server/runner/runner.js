@@ -2,21 +2,7 @@
 
 /**
  * The in-Strapi job runner (1.0 hardening, Phase 4 stream G). Off by default (config writesafe.runner.enabled).
- *
- * It runs approved bulk jobs in the background, chunk by chunk, with the same engine the agent's own `ws_bulk
- * {job_id}` calls use (adapter.js). Caller-driven resume keeps working whether the runner is on or off.
- *
- * Every chunk:
- *  1. the kill switch is read (an admin's "stop all jobs", or config): set, the worker takes no chunk;
- *  2. the lease is renewed (heartbeat); a worker that lost it stops;
- *  3. the permissions of the token that asked for the job are rebuilt from the token itself (never a superuser, never
- *     the approver's): a revoked or expired token, a deactivated owner, or any change to the token's rules on the
- *     job's content type pauses the job with `permission_changed`;
- *  4. the chunk runs with that token's ability, inside one transaction that first checks the lease is still held (the
- *     fence), so a worker that was taken over writes nothing;
- *  5. pacing: chunkPauseMs between chunks, so admin saves and other writers get the rows in between (the per-chunk
- *     time cap is the bulk engine's own, from stream B).
- * After a crash the lease expires (leaseMs) and any worker resumes from the job's last committed cursor.
+ * Design notes: docs/internals.md, section "server/runner/runner.js".
  */
 const crypto = require('crypto');
 const { LeaseLost } = require('./lease');

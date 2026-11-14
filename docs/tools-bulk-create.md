@@ -152,8 +152,8 @@ argument of ws_bulk and ws_replace.
   - `undoable`, the expiry (15 minutes, `bulk.planTtlSeconds`) and a random nonce.
 
   The payload carries the expiry, count, id-list hash, `undoable` and nonce in clear (none of it is secret); the
-  server recomputes everything else at the start. Arguments that only run, read or check a job (`chunk_size`,
-  `max_chunks`, `preview`, `max_documents`, `expected_count`, `agent`) are not part of the plan.
+  server recomputes everything else at the start. Arguments that only run or check a job (`chunk_size`, `max_chunks`,
+  `preview`, `max_documents`, `expected_count`, `agent`) are not part of the plan. `publish: "if_clean"` is (see below).
 
 ### 2. Start
 
@@ -203,28 +203,43 @@ long, and ws_replace ends it when its regex budget for the chunk is spent.
 
 **The canary.** The first chunk of a job that has more than one chunk is a canary: when any of its documents fails or
 conflicts, or none of them changes, the job pauses (`status: "paused"`, error `paused_canary`, with `paused.why` and
-the counts). `{job_id}` alone does not resume it; `{job_id, control: "resume"}` does, `{job_id, control: "cancel"}`
+the counts). `{job_id}` alone does not resume it; `{job_id, control: "resume"}` does, `ws_job {action: "cancel", job_id}`
 ends it. The canary is the job's first chunk only: when that chunk stops (`stop_on_error`) and the job is resumed, no
 canary runs again; and when the chunk time cap (`bulk.chunkTimeMs`) cuts the first chunk short, the canary judges
 only the documents that chunk reached.
 
-### 4. Resume, status, cancel
+### 4. Resume, status, cancel (ws_job)
+
+Continuing and resuming a job stay on its own tool (`ws_bulk` or `ws_replace` with `{job_id}`). Reading, listing,
+cancelling and undoing a job is the `ws_job` tool (1.0 hardening, phase 4; it comes with the `bulk` or `replace`
+module).
 
 - A call runs chunks, with a pause of `bulk.paceMs` (50 ms) between them so other writers get the rows, until the job is
-  done or the time budget is used (`bulk.timeBudgetMs`, 20 s, or `max_chunks`). Then it returns `status: "running"`
-  and the `job_id`; call again with `{job_id}`, also after a crash. In the kill test Strapi was killed with `kill -9`
-  mid-job and restarted; the job resumed and every document was written exactly once.
-- `{job_id, status_only: true}` returns the job and one page of items (200): failed, conflicting and skipped documents
-  by default, `items: "all"` for every document, `cursor` from `items_next` for the next page. rc.2 read up to 5,000
-  chunk receipts and returned every item. Status items carry the outcome, not the new version (the reply of the call
-  that wrote a document has it).
+  done or the time budget is used (`bulk.timeBudgetMs`, 20 s), or after `max_chunks` chunks when the call gives it
+  (on the start or on `{job_id, max_chunks}`: pacing for the caller, not part of the plan). Then it returns
+  `status: "running"` and the `job_id`; call again with `{job_id}`, also after a crash. In the kill test Strapi was
+  killed with `kill -9` mid-job and restarted; the job resumed and every document was written exactly once.
+- `ws_job {action: "status", job_id}` returns the job and one page of items (200): failed, conflicting and skipped
+  documents by default, `items: "all"` for every document, `cursor` from `items_next` for the next page. It writes
+  nothing. rc.2 read up to 5,000 chunk receipts and returned every item. Status items carry the outcome, not the new
+  version (the reply of the call that wrote a document has it).
+- `ws_job {action: "list"}` lists the token's jobs (ws_bulk, ws_replace and undo jobs), newest first, 20 per page
+  (`limit` up to 100, `cursor` from `next_cursor`): id, tool, action, type, status, totals, created and updated
+  times. No content.
 - Replies are bounded: the items of one call list at most 200 entries (only the problems when a call handled more:
   `items_truncated`), and `failures` and `conflicts` at most 20 each, with `failures_more` / `conflicts_more`. Item
   errors keep 500 characters of the database's own text (200 in reply lists).
-- `{job_id, control: "cancel"}`: waits for a chunk that is running (it commits), then the job stops; what was written
-  stays, the rest is not written. A cancelled job cannot be resumed (`job_cancelled`).
-- Only the token that started a job can see, resume or cancel it. One job per token and content type is active at a
-  time (running, paused or stopped); finish or cancel it to start the next.
+- `ws_job {action: "cancel", job_id}`: waits for a chunk that is running (it commits), then the job stops; what was
+  written stays, the rest is not written, and the job's slot is free. It cancels a running, paused, stopped or
+  `awaiting_approval` job, also one an admin paused (`admin_job`, `permission_changed`, `runner_errors`): the agent
+  can stop it but only an admin resumes it. A cancelled job cannot be resumed (`job_cancelled`). Cancelling a job that
+  is done or cancelled changes nothing (`cancelled: false` and a note).
+- Only the token that started a job can see, resume, cancel or undo it: another token's job id is `not_found` in
+  ws_job too. One job per token and content type is active at a time (running, paused or stopped); finish or cancel it
+  to start the next.
+- **Moved arguments.** Before phase 4, ws_bulk and ws_replace took `status_only`, `items`, `cursor` and
+  `control: "cancel"` with `{job_id}`. They now answer those with `invalid`, naming ws_job (nothing runs).
+  `max_chunks` stays on both tools (start and `{job_id, max_chunks}`), as on ws_undo and ws_job's `undo`.
 - The owner's kill switch: `bulk.paused: true` refuses new starts and pauses running jobs at their next chunk.
 
 **Statuses**
@@ -232,7 +247,7 @@ only the documents that chunk reached.
 | Job `status` | Meaning |
 |---|---|
 | `running` | More to do: call with `{job_id}`. |
-| `paused` | The canary or the owner paused it: `{job_id, control: "resume"}` or `"cancel"`. An error reply (`paused_canary`, `jobs_paused`). |
+| `paused` | The canary or the owner paused it: `{job_id, control: "resume"}`, or `ws_job {action: "cancel", job_id}`. An error reply (`paused_canary`, `jobs_paused`). |
 | `stopped` | `stop_on_error` met a failing document: fix it and call `{job_id}` to retry from it. An error reply (`job_stopped`). |
 | `done` | Finished; `reconcile` reports the filter now. |
 | `cancelled` | Cancelled; earlier writes kept. |
@@ -244,7 +259,7 @@ only the documents that chunk reached.
 | `skipped` | `reason: no_longer_matches` or `deleted`. |
 | `conflict` | The document is not the one the plan bound (publish: a newer draft). Not written. |
 | `failed` | Carries the error. In `stop_on_error`, the stopping document is `failed` (counted, listed) while the job is stopped, and is retried on resume. |
-| `not_attempted` | Not reached yet: after a stop, or (status_only on a running or paused job) not processed so far. |
+| `not_attempted` | Not reached yet: after a stop, or (ws_job status of a running or paused job) not processed so far. |
 
 **Modes**
 - `stop_on_error` (default): the documents before the failing one are committed and the job stops (`job_stopped`,
@@ -279,6 +294,35 @@ A document the colleague moved out of the filter is `skipped` (`no_longer_matche
 
 Publish is the exception on purpose: a publish makes the draft live, so it publishes only the draft the dry run saw
 (item 19). A draft that changed is a `conflict`.
+
+### Patch and publish: `publish: "if_clean"`
+
+A patch job (and a ws_replace job) takes `publish: "if_clean"` (1.0 hardening, phase 4): each document is written as a
+draft as usual and, in the same savepoint and transaction, published, but only when its draft and live version were
+identical before the patch (the semantic hash the version uses, without publish-state fields). A document whose draft
+already held another unpublished change stays a draft: publishing it would make that change live without review.
+
+- **Per document**, a written item (`ok`) says what happened: `published: true`, or `published: false` and
+  `publish_skipped`: `"draft_had_other_changes"`, `"no_live_version"` (never published), `"nothing_changed"` (the
+  write changed nothing) or `"publish_invalid"` (Strapi's publish validation would refuse the new draft; it is
+  written, not published). An `unchanged` item is neither written nor published. The job's `totals` add `published`
+  and `publish_skipped`; `ws_job {action: "status"}` lists them per document.
+- **The dry run** says it: `publish: "if_clean"` and a `publish_note`, and each preview entry has `would_publish` (and
+  `publish_skipped` when it would not). The preview never calls Strapi's publish. `events.per_document` lists
+  `entry.publish` next to `entry.update`, and `at_most` counts both.
+- **Part of the plan.** `publish` is in the plan token's change hash: a start that adds or drops it is
+  `plan_mismatch` (`reason: "request"`).
+- **Permission.** A token without the publish permission on the type is refused with `forbidden` before anything is
+  written, on the dry run too. `action: "publish"` with `publish` is `invalid` (a publish job publishes every matching
+  draft as it is).
+- **Approvals.** With `approvals.escalate.publish`, a patch job with `publish: "if_clean"` counts as a publish and
+  needs an admin's approval, like `action: "publish"`. Whatever the reason for the approval, its approver needs the
+  publish permission as well as the update permission, and the Write-safe jobs page titles the card "... and publish
+  (if clean)".
+- **Never over a conflict.** Each document is written with the version read under its lock; the publish only follows
+  a write that landed. A document that failed or conflicted is neither written nor published.
+- **Undo.** Undoing the job reverts the drafts it wrote. What it published stays live until it is published again: the
+  dry run's `publish_note` says so.
 
 ### What a bulk job does and does not protect
 
@@ -337,6 +381,8 @@ Search and replace in the text of one content type. It reaches into:
   colleague already fixed is `unchanged`, and a row a colleague added is replaced too.
 - Each document is written with the version read at that moment as the precondition. Component and zone rows are
   updated by key, so ids are kept.
+- `publish: "if_clean"` publishes each changed document in the same write when its draft had no other unpublished
+  change, as a ws_bulk patch job does (see above); it is part of the plan and needs the publish permission.
 
 **Safety limits**
 - Regexes run in a separate V8 context, with a time limit per document (`replace.regexTimeoutMs`, 250 ms), in total
@@ -427,7 +473,8 @@ It passes 172/172 on SQLite, Postgres 16 and MySQL 8.4 (see the PR for the per-d
 
 ## From the package README
 
-The package README's sections on these modules, moved here unchanged (the README keeps a one-line summary per tool).
+The package README's sections on these modules, moved here (the README keeps a one-line summary per tool). Phase 4
+updated the job arguments in them (ws_job).
 
 ### `create`: ws_create
 
@@ -465,10 +512,11 @@ cursor and counters. The job runs in chunks (default 25), one transaction each; 
 and written with that version as precondition (each in its own savepoint), so a colleague's edit to another field
 survives. A publish job publishes only the draft version the dry run saw: a newer draft is a `conflict`, not
 published. The first chunk is a canary: if a document in it fails or conflicts, or none changes, the job pauses
-(`paused_canary`; `control: "resume"` or `"cancel"`). Long jobs return `status: "running"` and a `job_id`; call again
+(`paused_canary`; `control: "resume"`, or cancel it with ws_job). Long jobs return `status: "running"` and a `job_id`; call again
 with `job_id` (also after a crash). Documents created during the job are never touched; the done reply's `reconcile`
-counts them (`still_matching`, `late_matches`). One active job per token and content type (`job_running`); `status_only`
-pages through the items. Limits: `bulk.maxDocuments` (5,000; an admin may raise it to the hard 100,000), more matches
+counts them (`still_matching`, `late_matches`). One active job per token and content type (`job_running`); `ws_job`
+lists, reads (paging through the items), cancels and undoes jobs. `publish: "if_clean"` on a patch job also publishes
+each document whose draft had no other unpublished change. Limits: `bulk.maxDocuments` (5,000; an admin may raise it to the hard 100,000), more matches
 are `too_many_documents`. A token with only the publish permission may run `action: "publish"`; a patch job needs the
 update permission. Full reference, with the call sequence and what a job does not protect:
 `docs/tools-bulk-create.md`.

@@ -3,24 +3,7 @@
 /**
  * The job store of ws_bulk and ws_replace (1.0 hardening item 18): two plugin tables, written once per job and then
  * per chunk, never as one growing JSON value.
- *
- *   writesafe_bulk_jobs   one row per job: what it does (tool, type, locale, action, spec, filter with the token's
- *                         conditions), who owns it, its state, a cursor (the ordinal of the next document) and counters.
- *                         `slot` is "<owner>|<uid>" while the job is active (running, paused, stopped) and null once it
- *                         is done or cancelled: a unique index on it allows one active job per token and content type.
- *   writesafe_bulk_items  one row per document of the job, written once at the start (the id snapshot): its ordinal in
- *                         job order, its documentId, for a publish job the draft version the plan bound, then its outcome
- *                         (state, chunk number, reason or error).
- *
- * rc.2 kept the whole id list inside the job's receipt row and rewrote that row after every chunk: O(N^2 / chunk) bytes
- * written per job (about 2.5 GB at 50,000 documents). Now a chunk writes its own item rows and one fixed-size job row.
- *
- * The database enforces what the app relies on (Strapi's own `unique` is checked by the app only): unique indexes on
- * jobs.job_id and jobs.slot, a unique index on items (job_id, ordinal) and an index on items (job_id, state). They are
- * created on first use; starts are refused (`unsupported`) while they cannot be.
- *
- * A job state change is made only under the job row's lock (FOR UPDATE; SQLite serialises writers), in the same
- * transaction as the chunk's writes: a chunk is fully recorded or not at all.
+ * Design notes: docs/internals.md, section "server/modules/_bulk/store.js".
  */
 const JOB_UID = 'plugin::writesafe.bulk-job';
 const ITEM_UID = 'plugin::writesafe.bulk-item';
@@ -55,6 +38,8 @@ const contentTypes = {
         nSkipped: { type: 'integer' },
         nFailed: { type: 'integer' },
         nConflict: { type: 'integer' },
+        nPublished: { type: 'integer' },
+        nPublishSkipped: { type: 'integer' },
         stopped: { type: 'json' },
         paused: { type: 'json' },
         reconcile: { type: 'json' },
@@ -88,6 +73,7 @@ const contentTypes = {
 };
 
 const COUNTERS = { ok: 'nOk', unchanged: 'nUnchanged', skipped: 'nSkipped', failed: 'nFailed', conflict: 'nConflict' };
+const PUBLISH_COUNTERS = ['nPublished', 'nPublishSkipped'];
 // [stream G] a job waiting for approval holds its slot too: the token cannot start a second job on the type meanwhile
 const ACTIVE = ['running', 'paused', 'stopped', 'awaiting_approval'];
 const INSERT_BATCH = 200;
@@ -120,6 +106,7 @@ function ensure(strapi) {
         await makeIndex(strapi, JOB_UID, ['jobId'], true, 'job_uq');
         await makeIndex(strapi, JOB_UID, ['slot'], true, 'slot_uq');
         await makeIndex(strapi, JOB_UID, ['updatedAt'], false, 'upd_ix');
+        await makeIndex(strapi, JOB_UID, ['owner'], false, 'owner_ix');
         await makeIndex(strapi, ITEM_UID, ['jobId', 'ordinal'], true, 'ord_uq');
         await makeIndex(strapi, ITEM_UID, ['jobId', 'state'], false, 'state_ix');
         readyState = { ok: true, reason: null };
@@ -142,7 +129,7 @@ function rowToJob(row) {
   if (!row) return null;
   const j = { ...row };
   for (const k of JSON_FIELDS) j[k] = j[k] == null ? null : parse(j[k]);
-  for (const k of ['total', 'cursor', 'chunks', 'chunkSize', ...Object.values(COUNTERS)]) j[k] = Number(j[k] || 0);
+  for (const k of ['total', 'cursor', 'chunks', 'chunkSize', ...Object.values(COUNTERS), ...PUBLISH_COUNTERS]) j[k] = Number(j[k] || 0);
   j.undoable = Boolean(j.undoable);
   j.runner = Boolean(j.runner);
   return j;
@@ -264,7 +251,7 @@ async function prune(strapi, cutoff, limit = 200, { decide = null, linked = null
 const resetPruneCursor = () => { pruneCursor = 0; };
 
 module.exports = {
-  JOB_UID, ITEM_UID, contentTypes, COUNTERS, ACTIVE, ensure, state: () => readyState, findJob, lockJob, activeJob, createJob, saveJob,
+  JOB_UID, ITEM_UID, contentTypes, COUNTERS, PUBLISH_COUNTERS, ACTIVE, ensure, state: () => readyState, findJob, lockJob, activeJob, createJob, saveJob,
   nextItems, setItem, resetItem, pageItems, members, prune, resetPruneCursor, jobCutoff, rowToJob, isSqlite,
   _reset: () => { ready = null; readyState = { ok: null, reason: null }; },
 };

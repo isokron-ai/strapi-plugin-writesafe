@@ -1,7 +1,7 @@
 # strapi-plugin-writesafe-mcp
 
 Write-safe tools for the MCP server built into Strapi 5. The plugin adds five core tools to Strapi's own `/mcp` endpoint,
-plus up to ten more tools and a row op from modules (`history` and `find` are on by default, the others optional), using the plugin API (`strapi.ai.mcp.registerTool`). They use the same
+plus up to eleven more tools and a row op from modules (`history` and `find` are on by default, the others optional), using the plugin API (`strapi.ai.mcp.registerTool`). They use the same
 admin tokens and the same RBAC as the built-in tools.
 
 Status: 1.0.0-rc.2, pre-release, under active hardening. Tested on Strapi 5.62.0 (Community edition) with SQLite, Postgres 16 and
@@ -41,7 +41,7 @@ module is on: `history` and `find` are on unless turned off, the others only whe
 |---|---|---|
 | `ws_schema` | core | Field and component shapes of a type, as this token sees them. |
 | `ws_get` | core | The draft with its `version` token and a `_key` per list row. |
-| `ws_patch` | core | Version-checked change of one draft: `set`, `unset`, row `ops`. |
+| `ws_patch` | core | Version-checked change of one draft: `set`, `unset`, row `ops`; `publish: "if_clean"` also publishes it if the draft had no other change. |
 | `ws_publish` | core | Publish only if the draft is still the version you reviewed. |
 | `ws_batch` | core | Up to 100 patches and publishes in one all-or-nothing transaction. |
 | `ws_find` | `find` (on by default) | Find drafts by filter: documentId, locale, version and a few fields per match. |
@@ -49,6 +49,7 @@ module is on: `history` and `find` are on unless turned off, the others only whe
 | `ws_delete` | `delete` | Version-checked delete of one locale or every locale. |
 | `ws_bulk` | `bulk` | Filter-scoped patch or publish of up to 5,000 documents (an admin may raise it to 100,000) in resumable chunks, started from a dry run's plan token. |
 | `ws_replace` | `replace` | Find and replace text (literal or regex) across documents, components, zones and blocks. |
+| `ws_job` | `bulk` or `replace` | List, read, cancel or undo your own ws_bulk, ws_replace and undo jobs. |
 | `copy` row op | `copy` | Duplicate rows in place, or copy them from another document, locale or type (ws_patch, ws_batch). |
 | `ws_localize` | `localize` | Create or update a locale from the source locale's structure; the agent supplies the text. |
 | `ws_history` | `history` (on by default) | Who wrote what and when, with before-images (filtered by the caller's read permissions). |
@@ -66,8 +67,9 @@ References:
 ## Safety model
 
 - **Versions.** `ws_get` returns a `version` token (`v2.<mac>`, an HMAC keyed from `APP_KEYS` over the uid, documentId,
-  locale and a semantic hash of the draft). `set` and `unset` need `expected_version` (or `force`); without it a write
-  is `precondition_required`, and a stale one is `version_conflict` with the current values and a retry hint. A bare
+  locale and a semantic hash of the draft). `set` and `unset` need `expected_version`, an `if_match` value for every
+  field they write (the mergeable path for scalar edits: other fields may have changed), or `force`; without one a
+  write is `precondition_required`, and a stale one is `version_conflict` with the current values and a retry hint. A bare
   `updatedAt` or an rc.2 token is refused. Rotating or reordering `APP_KEYS` makes every version and row key stale.
   [Set and versions](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#set-and-versions),
   [what the version catches](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#version-token-what-it-catches-10).
@@ -114,7 +116,7 @@ A bulk job (ws_bulk, ws_replace) above `bulk.maxDocuments` can run with an admin
 
 Tiers apply per job. `approvals.maxDocuments` is 20,000 by default, the size measured end to end (hard limit 100,000;
 above 50,000 two approvers always). `approvals.escalate.publish` / `.relations` (off by default) ask for one approval
-at any size.
+at any size (a patch job with `publish: "if_clean"` counts as a publish).
 
 The agent never approves: only an admin in the admin panel, with the **Approve writesafe jobs** permission, decides on
 the **Write-safe jobs** page, which also has a **Stop all bulk jobs** kill switch. Give agents tokens without user,

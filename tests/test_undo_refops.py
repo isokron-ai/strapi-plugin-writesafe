@@ -707,6 +707,10 @@ def t_review_h1_dry_run_and_status_only_never_write():
     check("status_only without undo_job_id is refused (invalid) and runs nothing", e and code(r) == "invalid" and [x["summary"] for x in pages_with(pre)] == before, r)
     e, s = ws("ws_undo", {"undo_job_id": u["undo_job_id"], "status_only": True})
     check("status_only with undo_job_id still reads the job", not e and s.get("status") == "running" and [x["summary"] for x in pages_with(pre)] == before, s)
+    # phase 4: ws_undo keeps status_only and max_chunks for undo jobs; ws_job reads the same undo job too
+    e, s2 = ws("ws_job", {"action": "status", "job_id": u["undo_job_id"]})
+    check("ws_job status of the undo job reads it (same state) and runs nothing", not e and s2.get("status") == "running" and s2.get("tool") == "ws_undo"
+          and [x["summary"] for x in pages_with(pre)] == before, s2)
     run_undo_job({"undo_job_id": u["undo_job_id"]})
 
 
@@ -783,7 +787,7 @@ def t_review_m4_noop_on_missing_component_writes_nothing():
     check("bulk re-tag over documents without the component: every one unchanged, nothing written", not e and j.get("totals", {}).get("unchanged") == 3 and j["totals"].get("ok") == 0
           and all(wget(GAL, g)["data"].get("feature") is None for g in gs), j)
     if j.get("status") in ("paused", "stopped", "running"):
-        ws("ws_bulk", {"job_id": j["job_id"], "control": "cancel"})  # the canary paused it (nothing changed): release the slot
+        ws("ws_job", {"action": "cancel", "job_id": j["job_id"]})  # the canary paused it (nothing changed): release the slot
 
 
 @T

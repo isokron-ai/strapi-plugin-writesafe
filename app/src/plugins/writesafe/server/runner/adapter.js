@@ -3,20 +3,7 @@
 /**
  * The one place stream G (approvals, the runner, the admin page) touches the bulk job engine of stream E
  * (modules/_bulk: jobs.js, store.js, plan.js). Everything in server/approval and server/runner calls only these.
- *
- * E's job: a row in writesafe_bulk_jobs (state, cursor, counters, slot, plan-bound idHash) and its id snapshot in
- * writesafe_bulk_items. A chunk commits its writes and the advanced cursor in ONE transaction that starts by locking
- * the job row (store.lockJob), so two callers never run the same chunk; jobs.runChunk(..., guard) calls guard(job)
- * inside that transaction, after the lock. B's per-chunk time cap (bulk.chunkTimeMs) applies inside.
- *
- * States: E's running, paused (canary, the config kill switch, or stream G's admin_job / permission_changed /
- * runner_errors), stopped, done, cancelled; stream G adds awaiting_approval (holds the slot), rejected and expired
- * (terminal, slot freed). The G view of a job (toG) is what the approval code reads.
- *
- * Stream F's undo jobs live in the same tables (tool ws_undo, slot undo|<scope>). They are not approval-tier bulk jobs:
- * never gated (they start in ws_undo, not in jobs.handle), never run by the runner (it only takes jobs with a lease),
- * not stopped by the kill switches (those stop forward bulk changes, so an undo can repair them), and the admin job API
- * only lists them: their control stays with the agent (isUndo).
+ * Design notes: docs/internals.md, section "server/runner/adapter.js".
  */
 const E = require('../engine');
 const M = require('../model');
@@ -35,7 +22,10 @@ function toG(row) {
     job_id: row.jobId, status: row.state, tool: row.tool, uid: row.contentType, locale: row.targetLocale || null,
     owner: row.owner, action: row.action, spec: row.spec || {}, qfilters: row.qfilters || {}, mode: row.mode,
     next: Number(row.cursor || 0), total: Number(row.total || 0), idHash: row.idHash || null, chunks: Number(row.chunks || 0),
-    totals: { ok: row.nOk || 0, unchanged: row.nUnchanged || 0, skipped: row.nSkipped || 0, failed: row.nFailed || 0, conflict: row.nConflict || 0 },
+    totals: {
+      ok: row.nOk || 0, unchanged: row.nUnchanged || 0, skipped: row.nSkipped || 0, failed: row.nFailed || 0, conflict: row.nConflict || 0,
+      ...(row.spec && row.spec.publish ? { published: Number(row.nPublished || 0), publish_skipped: Number(row.nPublishSkipped || 0) } : {}),
+    },
     approval: row.approval || null, runner: Boolean(row.runner), paused: row.paused || null,
     pause_reason: row.paused ? row.paused.reason || null : null, pause_detail: row.paused ? row.paused.detail || null : null,
     stopped: row.stopped || null, agent: row.agent || null,

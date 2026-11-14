@@ -2,24 +2,7 @@
 
 /**
  * Schema helpers: deep populate, row keys, the semantic content hash and the version token.
- *
- * Version token (1.0 hardening item 15): "v2.<mac>", where mac is a full-length HMAC-SHA256 (base64url, 43 characters)
- * over the token version, the content type uid, the documentId, the locale and the SEMANTIC content hash of the draft.
- *   - The semantic hash covers what an editor would call the content: scalars, single components, the type, order and
- *     nesting of every component row and dynamic-zone block, blocks (rich text) trees, relation documentIds and media
- *     references, at every depth. It leaves out component row ids at every depth, timestamps and authors.
- *   - So a write that only makes Strapi recreate component rows (the i18n sync of non-localized fields, a new locale,
- *     an import) keeps the version; a real change of a value, a row's type, the order or the nesting changes it.
- *   - updatedAt is not part of the token and not a matching condition (rc.2 compared it first).
- *   - The uid, documentId and locale are bound, so a version read from one locale (or document, or type) never matches
- *     another one with the same content.
- * Tokens of 1.0.0-rc.2 and the Phase 1 builds ("<updatedAt>~<hash12>") are refused with error.code version_format
- * (requires_reread): see engine.assertVersion and the plugin CHANGELOG for why they are not accepted any more.
- *
- * Why an HMAC and not a plain hash (0.2): the version covers fields the token may not be allowed to read. With a plain
- * sha256, a token could rebuild the draft from what it can read, add a guess for a hidden field and compare hashes
- * (measured: a hidden `note` of "approved" was recovered from the version alone). The key is derived from the app's
- * own secret keys at register time (setVersionKey), so versions stay stable across restarts.
+ * Design notes: docs/internals.md, section "server/model.js".
  */
 const crypto = require('crypto');
 
@@ -492,7 +475,7 @@ function unsupportedNested(strapi, cuid, depth = 0) {
 
 module.exports = {
   populateFor, fieldKind, isListKind, isListAttr, isVersionToken, isLegacyVersionToken, canonical, sha, contentHash, versionOf, versionMatches, rowKey, rowKeys,
-  rowHandle, rowHandles, keyIdentity, unhashable, isLocalizedUid, POPULATE_DEPTH, setRowEpoch, rowEpoch, semanticDoc, semanticRow, semanticHash, KEY_MAC_CHARS,
+  rowHandle, rowHandles, keyIdentity, unhashable, isLocalizedUid, POPULATE_DEPTH, setRowEpoch, rowEpoch, semanticDoc, semanticRow, semanticValue, semanticHash, KEY_MAC_CHARS,
   keyScope, presentDoc, attrsOf, unsupportedNested, isoOf, SKIP_KEYS, setVersionKey, mac, normalize, isToMany,
   creatorPopulate, CREATOR_QUERY, permQueryPopulate, setConditionPopulate, conditionPaths, populateForPaths,
 };

@@ -2,23 +2,7 @@
 
 /**
  * ws_undo: revert exactly what one receipt changed, using the before-image the history module stored with it.
- *
- * - update entries: each changed field goes back to its before value; for component lists only the rows the write
- *   added, updated, removed or moved are reverted, so rows other writers added since stay. An entry whose fields or
- *   rows changed after the receipt is a conflict: on_conflict "skip" (default since 1.0 hardening item 21) leaves that
- *   document alone and lists it with its before values; on_conflict "stop" refuses the whole undo.
- * - create entries (ws_localize creating a locale; ws_create): the created document/locale is deleted, refused if it
- *   changed since.
- * - delete entries (an undo of a create; ws_delete): the deleted draft is recreated (as a draft, same documentId).
- * - publish entries: not undone (reported in `skipped`).
- * The undo is itself a write with a receipt, so it can be undone. A small undo runs in one transaction (here); the undo of
- * a job, or of a receipt with more than 100 entries (not under on_conflict "stop"), runs as a resumable undo job
- * (undo-job.js) in its own chunks.
- *
- * Extension point for other modules: any tool that runs through api.runWrite and reports its writes with
- * MOD.afterWrite(ctx, {action: 'patch'|'create'|'delete', ...}, before, after) gets history and undo for free. A
- * multi-chunk job (ws_bulk) calls history.annotate({ group: jobId }) inside each chunk's run; ws_undo then accepts the
- * job id as receipt_id and reverts every chunk receipt of the job.
+ * Design notes: docs/internals.md, section "server/modules/history/undo.js".
  */
 const M = require('../../model');
 const W = require('../_lib/write');

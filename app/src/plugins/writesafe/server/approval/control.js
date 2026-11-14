@@ -101,10 +101,10 @@ async function decide(strapi, { requestId, admin, decision, planHash, note }) {
   return { ...r, started: Boolean(started) };
 }
 
-/** Undo jobs (stream F) are listed on the jobs page; their control stays with the agent (ws_undo). */
+/** Undo jobs (stream F) are listed on the jobs page; their control stays with the agent (ws_undo, ws_job). */
 async function notUndo(strapi, jobId, job) {
   const j = job === undefined ? await AD.getJob(strapi, jobId) : job;
-  if (AD.isUndo(j)) fail('not_supported', 'This is an undo job (ws_undo): the agent that started it continues or cancels it with ws_undo. The jobs page only lists it, and the kill switch does not stop it.');
+  if (AD.isUndo(j)) fail('not_supported', 'This is an undo job (ws_undo): the agent that started it continues it (ws_undo) or cancels it (ws_job, with the bulk or replace module). The jobs page only lists it, and the kill switch does not stop it.');
   return j;
 }
 

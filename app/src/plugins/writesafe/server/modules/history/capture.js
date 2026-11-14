@@ -3,31 +3,7 @@
 /**
  * History capture: one receipt row per successful ws_* write, holding who wrote, what, when, and a compact
  * before-image of exactly the fields and rows the write changed.
- *
- * How it plugs in (server/modules/index.js):
- *  - hooks.aroundWrite wraps every write run (engine.runOnce, inside its transaction). It opens a collector,
- *    runs the write, then stores the receipt row in the same transaction and adds `receipt_id` to the reply.
- *  - hooks.afterWrite is called by the engine (ws_patch, ws_publish, each ws_batch item) and by module writes
- *    (ws_localize, ws_undo, and any module that calls MOD.afterWrite, e.g. ws_create / ws_delete / ws_bulk) with the
- *    normalized draft before and after. It adds one entry to the collector. info.action:
- *      'patch' (before and after)   -> changed fields and rows, with their before values and after hashes
- *      'create' (before = null)     -> the created document/locale and its version (undo deletes it)
- *      'delete' (after = null)      -> the whole deleted draft (undo recreates it)
- *      'publish'                    -> recorded for history; not undoable
- *
- * Entry format (history.e[]), version 1:
- *   { i, ref?, tool, uid, documentId, locale, op, vb?, va?,
- *     f: { <field>: { b: <before value>, a: <hash of after value> } },        whole-field images (scalars, single
- *                                                                              components, blocks, media, relations)
- *     r: { <field>: { o: [before keys], n: [after keys], b: {key: row}, a: {key: hash}, m: 0|1 } },
- *                                                                              row images of component lists: b holds
- *                                                                              the before content of rows the write
- *                                                                              updated or removed, a the after hash of
- *                                                                              rows it updated or added, m = reordered
- *     doc?: <whole before draft> (op delete) }
- * Size caps (item 21): an entry over maxBeforeBytes loses its before values (t: 1, tr: "document"); the receipts of one
- * job share maxJobBeforeBytes (stats row "undostat:<group>"), later entries get t: 1, tr: "job". The receipt is t: 1
- * only when no entry can be undone. An undo entry carries uo: [receipt id, entry index], the entry it reverted.
+ * Design notes: docs/internals.md, section "server/modules/history/capture.js".
  */
 const crypto = require('crypto');
 const { AsyncLocalStorage } = require('node:async_hooks');

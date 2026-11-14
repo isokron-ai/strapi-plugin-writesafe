@@ -175,3 +175,22 @@ def ident(keys):
     test that checks "same rows (ids)" compares identities; blocks keys are returned as they are."""
     one = lambda k: k if not isinstance(k, str) or k.startswith("#") else ":".join(k.split(":")[:2])
     return one(keys) if isinstance(keys, str) else [one(k) for k in keys]
+
+
+class one_chunk:
+    """A ws_bulk / ws_replace call runs chunks until its job is done, bulk.timeBudgetMs is used or max_chunks chunks
+    ran, and always at least one. Inside `with common.one_chunk():` the budget is 1 ms (set in the running Strapi by
+    the test probe plugin), so each call without max_chunks runs exactly one chunk: the time-budget path, which
+    max_chunks does not exercise. The value from before is put back on exit."""
+
+    def __enter__(self):
+        s, b, _ = spike.rest(spike.RA, "POST", "/api/probe/bulk-config", {"timeBudgetMs": 1})
+        if s != 200 or not isinstance(b, dict) or not b.get("ok"):
+            raise RuntimeError(("probe bulk-config (WRITESAFE_TEST_PROBE=true needed)", s, b))
+        self.before = b.get("before")
+        return self
+
+    def __exit__(self, *exc):
+        spike.rest(spike.RA, "POST", "/api/probe/bulk-config", {"timeBudgetMs": self.before})
+        return False
+

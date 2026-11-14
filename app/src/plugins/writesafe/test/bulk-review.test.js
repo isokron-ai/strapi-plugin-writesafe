@@ -123,7 +123,7 @@ test('M3: a job reply lists at most 200 items, and failures/conflicts are bounde
   const v = await J.view(st, baseJob(), callItems);
   assert.ok(v.items.length <= 200, `items ${v.items.length}`);
   assert.strictEqual(v.items_truncated, true);
-  assert.match(v.items_note, /status_only/);
+  assert.match(v.items_note, /ws_job/);
   assert.ok(v.failures.length <= 20 && v.failures_more === 250 - v.failures.length, JSON.stringify({ n: v.failures.length, more: v.failures_more }));
   assert.ok(v.conflicts.length <= 20 && v.conflicts_more === 50 - v.conflicts.length);
   assert.ok(JSON.stringify(v).length < 120000, `reply size ${JSON.stringify(v).length}`);

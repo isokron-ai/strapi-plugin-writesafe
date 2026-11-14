@@ -10,11 +10,15 @@
  */
 const { fieldsOf } = require('./view');
 
+/** A patch or replace job with publish "if_clean" also publishes: its approver needs the publish permission too. */
+const publishesToo = (req) => Boolean(req && req.action !== 'publish' && req.spec && req.spec.publish === 'if_clean');
+
 function mayAct(pc, req, leavesOf = (f) => [f]) {
   const act = req.action === 'publish' ? 'publish' : 'update';
   const ent = req.locale ? { locale: req.locale } : {};
   try {
     if (pc.cannot[act](ent)) return false;
+    if (publishesToo(req) && pc.cannot.publish(ent)) return false;
     if (act === 'update') {
       for (const f of fieldsOf(req.spec)) for (const p of leavesOf(f)) if (pc.cannot[act](ent, p)) return false;
     }
@@ -61,6 +65,7 @@ function mayActPaths(pc, req, paths) {
   const ent = req.locale ? { locale: req.locale } : {};
   try {
     if (pc.cannot.update(ent)) return false;
+    if (publishesToo(req) && pc.cannot.publish(ent)) return false;
     for (const p of paths) if (pc.cannot.update(ent, p)) return false;
     return true;
   } catch {
@@ -81,4 +86,4 @@ function mayActWith(strapi, ability, req) {
   }
 }
 
-module.exports = { mayAct, mayActWith, leavesFor, permPathsFor, mayActPaths };
+module.exports = { publishesToo, mayAct, mayActWith, leavesFor, permPathsFor, mayActPaths };

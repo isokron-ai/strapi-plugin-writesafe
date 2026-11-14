@@ -118,13 +118,14 @@ def story_data(title, ext, **kw):
 def t_catalog():
     s, b, raw = spike.rpc(A, "tools/list")
     tools = {t["name"]: t for t in b["result"]["tools"]}
-    for n in ("ws_create", "ws_delete", "ws_bulk", "ws_replace"):
+    for n in ("ws_create", "ws_delete", "ws_bulk", "ws_replace", "ws_job"):
         check("catalog lists " + n, n in tools)
         if n in tools:
             check(n + " args are strict", tools[n]["inputSchema"].get("additionalProperties") is False, tools[n]["inputSchema"].get("additionalProperties"))
     ops = tools["ws_patch"]["inputSchema"]["properties"]["ops"]["items"]
     check("ws_patch ops accept the copy op", "copy" in ops["properties"]["op"]["enum"], ops["properties"]["op"])
-    check("receipt and job store not exposed as tools", not any("receipt" in n or "job" in n for n in tools))
+    # phase 4: ws_job is the one tool over the caller's own jobs; nothing else exposes the receipt or job store
+    check("receipt and job store not exposed as tools (besides ws_job)", not any(("receipt" in n or "job" in n) and n != "ws_job" for n in tools), sorted(tools))
 
 
 @T
@@ -133,7 +134,7 @@ def t_modules_off():
         return
     s, b, raw = spike.rpc(A, "tools/list")
     names = [t["name"] for t in b["result"]["tools"]]
-    check("modules off: no ws_create/ws_delete/ws_bulk/ws_replace registered", not any(n in names for n in ("ws_create", "ws_delete", "ws_bulk", "ws_replace")), names)
+    check("modules off: no ws_create/ws_delete/ws_bulk/ws_replace/ws_job registered", not any(n in names for n in ("ws_create", "ws_delete", "ws_bulk", "ws_replace", "ws_job")), names)
     check("modules off: core ws_* tools still registered", all(n in names for n in ("ws_get", "ws_patch", "ws_publish", "ws_batch")), names)
     ops = [t for t in b["result"]["tools"] if t["name"] == "ws_patch"][0]["inputSchema"]["properties"]["ops"]["items"]
     check("modules off: copy op not offered", "copy" not in ops["properties"]["op"]["enum"], ops["properties"]["op"])
@@ -391,6 +392,11 @@ def job(tool, args, who=A, **start):
     return ws(tool, dict(args, plan_token=d["plan_token"], **start), who)
 
 
+def job_status(jid, who=A, **kw):
+    """ws_job {action: "status"} (phase 4: status_only, items and cursor moved there from ws_bulk / ws_replace)."""
+    return ws("ws_job", dict({"action": "status", "job_id": jid}, **kw), who)
+
+
 def bulk(args, who=A, **start):
     return job("ws_bulk", args, who, **start)
 
@@ -447,10 +453,10 @@ def t_bulk_dry_run_and_run():
     e, r2 = ws("ws_bulk", {"job_id": jid})
     check("resume with job_id finishes the job", not e and r2["status"] == "done" and r2["processed"] == 7 and r2["totals"]["ok"] == 7, r2)
     check("every page written once", all(p["summary"] == "bulk summary" for p in pages_with(pre)))
-    e, r3 = ws("ws_bulk", {"job_id": jid, "status_only": True, "items": "all"})
-    check("status_only items: all lists every item of the job", not e and len(r3["items"]) == 7 and {i["documentId"] for i in r3["items"]} == set(docs) and r3["items_scope"] == "all", r3)
-    e, r3b = ws("ws_bulk", {"job_id": jid, "status_only": True})
-    check("status_only by default lists only problems (none here), totals from the job's counters", not e and r3b["items"] == [] and r3b["items_scope"] == "problems" and r3b["totals"]["ok"] == 7, r3b)
+    e, r3 = job_status(jid, items="all")
+    check("ws_job status items: all lists every item of the job", not e and len(r3["items"]) == 7 and {i["documentId"] for i in r3["items"]} == set(docs) and r3["items_scope"] == "all", r3)
+    e, r3b = job_status(jid)
+    check("ws_job status by default lists only problems (none here), totals from the job's counters", not e and r3b["items"] == [] and r3b["items_scope"] == "problems" and r3b["totals"]["ok"] == 7, r3b)
     e, r4 = bulk(base)
     check("re-running the same change: every document unchanged (not written again)", not e and r4["totals"].get("unchanged") == 7 and r4["totals"].get("ok") == 0, r4)
     e, r5 = ws("ws_bulk", {"job_id": jid}, who=B)
@@ -566,8 +572,8 @@ def t_bulk_one_job_per_type_and_cancel():
     check("a second job of the same token on the same type -> job_running naming job 1", e and code(r2) == "job_running" and r2["error"]["job_id"] == j1, r2)
     e, rb = bulk(a2, who=B, chunk_size=6)
     check("another token's job on the same type is not blocked", not e and rb["status"] == "done", rb)
-    e, c = ws("ws_bulk", {"job_id": j1, "control": "cancel"})
-    check("cancel: status cancelled", not e and c["status"] == "cancelled" and c["processed"] == 2, c)
+    e, c = ws("ws_job", {"action": "cancel", "job_id": j1})
+    check("ws_job cancel: status cancelled", not e and c["status"] == "cancelled" and c["processed"] == 2 and c.get("cancelled") is True, c)
     check("documents after the cancel are not written", [common.rest_get(RA, d)["summary"] for d in docs] == ["first"] * 2 + ["s"] * 4)
     e, r = ws("ws_bulk", {"job_id": j1})
     check("a cancelled job cannot be resumed", e and code(r) == "job_cancelled", r)
@@ -673,8 +679,8 @@ def t_bulk_colleague_mid_job():
     check("document that no longer matches the filter is skipped, not written", st[docs[3]]["status"] == "skipped" and st[docs[3]]["reason"] == "no_longer_matches" and common.rest_get(RA, docs[3])["summary"] == "s", st.get(docs[3]))
     check("deleted document is skipped", st[docs[4]]["status"] == "skipped" and st[docs[4]]["reason"] == "deleted", st.get(docs[4]))
     check("totals: 4 ok, 2 skipped", r2["totals"]["ok"] == 4 and r2["totals"]["skipped"] == 2, r2["totals"])
-    e, s = ws("ws_bulk", {"job_id": jid, "status_only": True})
-    check("status_only (problems) lists the 2 skipped documents with their reasons", not e and sorted((i["documentId"], i["reason"]) for i in s["items"]) == sorted([(docs[3], "no_longer_matches"), (docs[4], "deleted")]), s)
+    e, s = job_status(jid)
+    check("ws_job status (problems) lists the 2 skipped documents with their reasons", not e and sorted((i["documentId"], i["reason"]) for i in s["items"]) == sorted([(docs[3], "no_longer_matches"), (docs[4], "deleted")]), s)
 
 
 @T
@@ -738,14 +744,14 @@ def t_bulk_stop_and_continue():
     # review L1: the stopping document is a counted, listed failure while the job is stopped
     check("the stopping document is counted in totals.failed and listed in failures", r.get("totals", {}).get("failed") == 1
           and [f["documentId"] for f in r.get("failures", [])] == [docs[2]], r)
-    e, sp = ws("ws_bulk", {"job_id": r["job_id"], "status_only": True})
-    check("status_only (problems) lists the stopping document", [(i["documentId"], i["status"]) for i in sp.get("items", [])] == [(docs[2], "failed")], sp)
-    e, wrong = ws("ws_replace", {"job_id": r["job_id"], "status_only": True})
+    e, sp = job_status(r["job_id"])
+    check("ws_job status (problems) lists the stopping document", [(i["documentId"], i["status"]) for i in sp.get("items", [])] == [(docs[2], "failed")], sp)
+    e, wrong = ws("ws_replace", {"job_id": r["job_id"]})
     check("a ws_bulk job is not found through ws_replace (review L3)", e and code(wrong) == "not_found", wrong)
     pub = {p["documentId"] for p in rest_list("pages", "status=published&filters[title][$startsWith]=%s&pagination[pageSize]=50" % pre)}
     check("published: the first two only", pub == set(docs[:2]), pub)
-    e, s = ws("ws_bulk", {"job_id": r["job_id"], "status_only": True, "items": "all"})
-    check("status_only (an error reply while the job is stopped) shows the stopped document as failed and the rest not attempted", code(s) == "job_stopped" and [i["status"] for i in s["items"]] == ["ok", "ok", "failed", "not_attempted", "not_attempted"], s)
+    e, s = job_status(r["job_id"], items="all")
+    check("ws_job status (an error reply while the job is stopped) shows the stopped document as failed and the rest not attempted", code(s) == "job_stopped" and [i["status"] for i in s["items"]] == ["ok", "ok", "failed", "not_attempted", "not_attempted"], s)
     common.rest_put(RB, docs[2], {"title": pre + "-fixed"})
     e, r2 = ws("ws_bulk", {"job_id": r["job_id"]})
     # item 19: the fixed draft is newer than the one the plan bound, so it is a conflict, not published
@@ -857,10 +863,10 @@ def t_bulk_resume_after_kill():
     counts = [sum(1 for it in common.rest_get(RA, d_)["items"] if it["label"] == "kill-row") for d_ in docs]
     check("after kill -9 and restart, resuming finishes the job", not e and r["status"] == "done", r)
     check("every page has the row exactly once (no chunk written twice or lost; %d were written before the kill)" % written_before, counts == [1] * N_KILL, counts)
-    e, s = ws("ws_bulk", {"job_id": r["job_id"], "status_only": True, "items": "all"})
+    e, s = job_status(r["job_id"], items="all")
     ids = [i["documentId"] for i in s["items"]]
     while s.get("items_next"):
-        e, s = ws("ws_bulk", {"job_id": r["job_id"], "status_only": True, "items": "all", "cursor": s["items_next"]["cursor"]})
+        e, s = job_status(r["job_id"], items="all", cursor=s["items_next"]["cursor"])
         ids += [i["documentId"] for i in s["items"]]
     check("the item rows list each document once", sorted(ids) == sorted(docs), len(ids))
 

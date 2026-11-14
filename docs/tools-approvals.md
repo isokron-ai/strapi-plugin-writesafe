@@ -32,8 +32,8 @@ publish or a bulk edit of a to-many relation; teams should turn them on.
 dry run's `plan_token`) returns `approval_required` with a `job_id` and `approval` (request id, tier, plan hash). The
 job and its exact document list (the id snapshot of its plan) are stored as `awaiting_approval`, but nothing runs.
 A waiting job holds the token's job slot: one active job per token and content type, so the agent cannot start a
-second one meanwhile (`job_running`); it may cancel its own waiting job (`control: "cancel"`), which withdraws the
-request. The agent then calls `ws_bulk {job_id}`: it reports the approval status until an admin decides, and starts
+second one meanwhile (`job_running`); it may cancel its own waiting job (`ws_job {action: "cancel", job_id}`; before
+phase 4 `control: "cancel"`), which withdraws the request. The agent then calls `ws_bulk {job_id}`: it reports the approval status until an admin decides, and starts
 the job once approved (`approval_rejected`, `approval_expired` otherwise; both free the slot). The approval is bound to
 the plan: the job id comes from the plan token's MAC, and the plan hash also covers the stored id-list hash. A job an
 admin paused, or that the runner paused because its token's permissions changed (`permission_changed`) or after
@@ -96,7 +96,7 @@ already running commits; no new chunk starts, agent-driven or not, until it is s
 read counts as on; `runner.killSwitch: true` or the bulk engine's `bulk.paused` holds it on from config: any of the
 three stops every job). Each request is shown through the viewing
 admin's own read permission: values of fields they cannot read are hidden. The admin who decides must be allowed the
-job's action (update, or publish) on its content type, and an earlier approval stops counting if its admin is
+job's action (update, or publish; both for a patch or replace job with `publish: "if_clean"`) on its content type, and an earlier approval stops counting if its admin is
 deactivated or loses the permission.
 
 **The runner** (`runner.enabled`, off by default) runs approved jobs in the background inside Strapi, so the agent does
@@ -109,14 +109,15 @@ committed chunk; after a chunk error the job waits 2, 4, 8, 16 s before the next
 (`runner_errors`). If `runner.enabled` is set but the runner could not start (a failed probe, see the log), the jobs
 page says so and approved jobs run when the agent resumes them. Before every chunk the permissions of the token that asked for the job are rebuilt from the token
 itself (never a superuser, never the approver's); if the token was revoked or expired, its owner deactivated, or its
-rules on the content type changed, the job pauses with `permission_changed` and only an admin can resume it (or cancel
-it). `chunkPauseMs` paces chunks. With the runner off, an approved job runs when the agent calls `ws_bulk {job_id}`, as
+rules on the content type changed, the job pauses with `permission_changed` and only an admin can resume it (an admin,
+or the agent with `ws_job {action: "cancel"}`, can cancel it). `chunkPauseMs` paces chunks. With the runner off, an approved job runs when the agent calls `ws_bulk {job_id}`, as
 any job does; agent-driven resume works either way. Replicas need synchronised clocks (the lease is in epoch ms).
 
 **Undo jobs** (stream F's ws_undo jobs, in the same job tables) are not approval-tier jobs: they need no approval at
 any size, the runner never runs them, the kill switch does not stop them (it stops forward bulk changes, so an undo can
 repair them while it is on), and the jobs page lists them without Pause, Resume or Cancel (`not_supported` on the admin
-API): the agent that started one continues or cancels it with ws_undo.
+API): the agent that started one continues it with ws_undo (or `ws_job {action: "undo"}`) and, since phase 4,
+cancels it with `ws_job {action: "cancel"}`.
 
 ## From the package README
 
@@ -136,7 +137,7 @@ The package README's approval rules, moved here unchanged (the README keeps the 
 - **The runner** (`runner.enabled`, off by default) runs approved jobs in the background under a database lease with a
   heartbeat; it resumes after a crash and re-checks the requesting token's permissions before every chunk.
 - **Undo jobs** (ws_undo) need no approval, are not run by the runner nor stopped by the kill switch, and are listed on
-  the page without controls: the agent continues or cancels them.
+  the page without controls: the agent continues them, and cancels them with ws_job.
 
 Full reference (what the agent sees, what makes a token safe, the quiet period, the page, the runner's lease and
 back-off): `docs/tools-approvals.md`.

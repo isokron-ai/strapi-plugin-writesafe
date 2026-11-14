@@ -2,64 +2,7 @@
 
 /**
  * Module registry: optional feature modules (bulk, l10n, media, ...) plug into the core without editing it.
- *
- * A module is a folder `server/modules/<name>/index.js` exporting:
- *
- *   {
- *     name: 'bulk',                                   // must equal the folder name; config.modules.<name> turns it on
- *     tools: (strapi, api) => [definition, ...],      // MCP tool definitions (same shape as tools.js uses for
- *                                                     // strapi.ai.mcp.registerTool); registered only when enabled
- *     hooks: {                                        // all optional; called for every ws_patch/ws_publish/ws_batch item
- *       beforeWrite: async (ctx, info) => {},         // inside the write transaction, after the version check and before
- *                                                     // the write; throw api.WsError({code, message}) to refuse
- *       afterWrite: async (ctx, info, before, after) => data,   // inside the transaction, after the write; `before` and
- *                                                     // `after` are the normalized drafts (relations as documentIds).
- *                                                     // A non-undefined return is put in receipt.modules[<name>]
- *     },
- *     ops: {                                          // extra row ops for ws_patch `ops` (e.g. copy)
- *       copy: {
- *         schema: { from: z.string().optional() },    // extra op properties (zod shape), merged into the op schema
- *         apply: (opCtx) => {},                       // see engine.applyRowOps: mutate opCtx.work, push keys to opCtx.summary
- *       },
- *     },
- *   }
- *
- * ctx is the MCP handler context ({ userAbility, user }). info is
- *   { tool, action: 'patch' | 'publish', uid, documentId, locale, args, dryRun,
- *     data,               // patch: the sanitized payload about to be written (beforeWrite may inspect, not change it)
- *     sanitize(doc),      // the token's read view of a raw document (hidden fields removed)
- *     raw: { before, after } }  // the FULL normalized drafts, hidden fields included: for data a module keeps to itself
- *   afterWrite's `before`/`after` arguments are the token's view (hidden fields removed), because whatever afterWrite
- *   returns is shown to the caller in receipt.modules and replayed on idempotent retries. Never copy info.raw into the
- *   return value.
- *   Batches: hooks run per item (info.tool 'ws_batch'); their returns are in the reply's items[].modules (and so in a
- *   stored idempotent receipt).
- *   Module tools that write documents (ws_localize, ws_undo, ws_create, ws_delete, ws_bulk, ...) run through
- *   api.runWrite and report each write with MOD.afterWrite(ctx, { action: 'patch' | 'create' | 'delete' | 'publish',
- *   tool, uid, documentId, locale, args, dryRun }, before, after) (before null = created, after null = deleted), so the
- *   history module records them like the core's own writes.
- * opCtx is { strapi, uid, field, attr, kind, work, op, index, where, refs, summary, find(key) -> i,
- *   resolvePos(pos) -> i, newKey() -> 'new:n', checkComponentData(cuid, data), WsError }.
- *   `work` is the list being edited: entries { key, row, isNew }. A new row must be pushed with isNew: true and a
- *   key from newKey() (the receipt maps it to its final key). After all ops the core strips `id` from new rows, refuses
- *   an existing row that appears twice, and checks field permissions on every changed sub-field, so a copy op cannot
- *   share or leak a row.
- *
- * `api` (second argument of tools) exposes the engine so module tools reuse its transaction, idempotency, version and
- * permission handling: see apiFor() below.
- *
- * Optional module exports besides tools/hooks/ops:
- *   hooks.aroundWrite(meta, next)  wraps every write run (inside its transaction); must return await next() (possibly
- *                                  extended). meta = { strapi, ctx, extra, tool, args, key }. Used by history.
- *   writeArgs(z) -> zod shape      extra top-level arguments for ws_patch, ws_publish, ws_batch (e.g. history's `agent`)
- *   contentTypes                   { <singularName>: { schema } }, declared for every module folder, on or off
- *
- * Receipts (plugin::writesafe.receipt, one schema for the core and every module; see strapi-server.js):
- *   key, requestHash, tool, receipt   the core's idempotency record (rows exist for writes with an idempotency_key)
- *   targets                          "|<uid>~<documentId>~<locale>|...|" of every document the write touched
- *   receiptId, tokenId, agent         filled by the history module, which adds a row ("h:<receiptId>" key) for every
- *                                    write without an idempotency key, in the write's own transaction
- *   moduleData                       modules' own records keyed by module name, e.g. moduleData.history
+ * Design notes: docs/internals.md, section "server/modules/index.js".
  */
 const fs = require('fs');
 const path = require('path');
