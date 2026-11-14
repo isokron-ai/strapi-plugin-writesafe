@@ -1,0 +1,8 @@
+{
+  "name": "isokron-test-probe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TEST ONLY. Writes through paths other than writesafe (another plugin's Document Service call, raw knex) so the version-token boundary tests can reach them. Enabled only with WRITESAFE_TEST_PROBE=true.",
+  "strapi": { "kind": "plugin", "name": "probe", "displayName": "Test probe" },
+  "main": "strapi-server.js"
+}

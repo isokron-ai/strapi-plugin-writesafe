@@ -1,0 +1,2 @@
+{ "collectionName": "components_gallery_screens", "info": { "displayName": "screen" },
+  "attributes": { "caption": { "type": "string" }, "image": { "type": "media", "multiple": false, "allowedTypes": ["images"] } } }

@@ -1,0 +1,18 @@
+{
+  "collectionName": "components_shared_groups",
+  "info": {
+    "displayName": "Group",
+    "description": "Test fixture (1.0 hardening item 16b): a component with a nested repeatable component"
+  },
+  "options": {},
+  "attributes": {
+    "name": {
+      "type": "string"
+    },
+    "entries": {
+      "type": "component",
+      "repeatable": true,
+      "component": "shared.meta"
+    }
+  }
+}

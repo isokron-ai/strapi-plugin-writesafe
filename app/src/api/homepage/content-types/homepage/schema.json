@@ -1,0 +1,12 @@
+{
+  "kind": "singleType",
+  "collectionName": "homepages",
+  "info": { "singularName": "homepage", "pluralName": "homepages", "displayName": "Homepage" },
+  "options": { "draftAndPublish": true },
+  "attributes": {
+    "title": { "type": "string", "required": true },
+    "note": { "type": "string" },
+    "items": { "type": "component", "repeatable": true, "component": "shared.item" },
+    "sections": { "type": "dynamiczone", "components": ["blocks.text", "blocks.hero", "blocks.cta"] }
+  }
+}

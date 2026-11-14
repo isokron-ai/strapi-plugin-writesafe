@@ -1,0 +1,6 @@
+{ "collectionName": "components_gallery_slides",
+  "info": { "displayName": "slide", "description": "Test fixture (1.0 hardening item 20, nested lists): a repeatable row holding a multiple media field, a to-many relation and a nested repeatable component." },
+  "attributes": { "caption": { "type": "string" },
+                  "images": { "type": "media", "multiple": true, "allowedTypes": ["images", "files"] },
+                  "people": { "type": "relation", "relation": "manyToMany", "target": "api::author.author" },
+                  "notes": { "type": "component", "repeatable": true, "component": "shared.meta" } } }

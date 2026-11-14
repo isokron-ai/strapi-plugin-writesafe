@@ -1,0 +1,4 @@
+{ "collectionName": "components_l10n_figures", "info": { "displayName": "figure" },
+  "attributes": { "caption": { "type": "string" }, "alt": { "type": "string" },
+                  "image": { "type": "media", "multiple": false, "allowedTypes": ["images"] },
+                  "topic": { "type": "relation", "relation": "manyToOne", "target": "api::topic.topic" } } }

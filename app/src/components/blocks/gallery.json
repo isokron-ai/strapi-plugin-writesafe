@@ -1,0 +1,10 @@
+{
+  "collectionName": "components_blocks_galleries",
+  "info": { "displayName": "gallery", "description": "1.0 test fixture: media inside a dynamic-zone row" },
+  "options": {},
+  "attributes": {
+    "title": { "type": "string" },
+    "image": { "type": "media", "multiple": false, "allowedTypes": ["images"] },
+    "images": { "type": "media", "multiple": true, "allowedTypes": ["images", "files"] }
+  }
+}

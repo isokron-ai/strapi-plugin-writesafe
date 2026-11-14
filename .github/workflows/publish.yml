@@ -1,0 +1,96 @@
+name: Publish to npm
+
+# Manual only. Publishes app/src/plugins/writesafe as strapi-plugin-writesafe-mcp.
+# Needs the repository secret NPM_TOKEN (an npm automation or granular token with publish rights on the package);
+# the owner adds it when the package is ready. Default is a dry run: nothing leaves the runner.
+# Provenance (npm publish --provenance) needs a PUBLIC source repository: npm refuses provenance from a private one.
+# Publish from the public plugin repository, or untick provenance for a private-repo publish.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish; must equal package.json version (a guard against publishing the wrong build)'
+        required: true
+      dry_run:
+        description: 'Dry run (npm publish --dry-run)'
+        type: boolean
+        default: true
+      provenance:
+        description: 'Publish with npm provenance (public repository only)'
+        type: boolean
+        default: true
+      dist_tag:
+        description: 'npm dist-tag'
+        required: false
+        default: 'latest'
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read     # the guard checks that CI passed on this commit
+      id-token: write   # npm provenance (sigstore) uses the workflow's OIDC token
+    defaults:
+      run:
+        working-directory: app/src/plugins/writesafe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - name: Guards
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          PROVENANCE: ${{ github.event.inputs.provenance }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          HAS_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+          DIST_TAG: ${{ github.event.inputs.dist_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PKG_VERSION=$(node -p 'require("./package.json").version')
+          [ "$PKG_VERSION" = "$INPUT_VERSION" ] || { echo "::error::package.json is $PKG_VERSION, input is $INPUT_VERSION"; exit 1; }
+          case "$GITHUB_REF" in refs/heads/main|refs/tags/v*) ;; *) [ "$DRY_RUN" = true ] || { echo "::error::real publishes only from main or a v* tag (ref: $GITHUB_REF)"; exit 1; } ;; esac
+          case "$GITHUB_REF" in refs/tags/*) [ "$GITHUB_REF_NAME" = "v$PKG_VERSION" ] || { echo "::error::tag $GITHUB_REF_NAME does not match v$PKG_VERSION"; exit 1; } ;; esac
+          case "$PKG_VERSION" in *-*) [ "$DIST_TAG" != latest ] || { echo "::error::prerelease $PKG_VERSION must not go out as dist-tag latest"; exit 1; } ;; esac
+          if [ "$DRY_RUN" != true ]; then
+            CI_OK=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq '.total_count' 2>/dev/null || echo 0)
+            [ "$CI_OK" != 0 ] || { echo "::error::no successful CI run (ci.yml) for $GITHUB_SHA"; exit 1; }
+          fi
+          if [ "$PROVENANCE" = true ] && [ "$REPO_PRIVATE" = true ] && [ "$DRY_RUN" != true ]; then
+            echo "::error::npm provenance needs a public source repository; this one is private. Publish from the public plugin repo, or untick provenance."; exit 1
+          fi
+          if [ "$DRY_RUN" != true ] && [ "$HAS_TOKEN" != true ]; then echo "::error::NPM_TOKEN secret is not set"; exit 1; fi
+          if npm view "strapi-plugin-writesafe-mcp@$PKG_VERSION" version >/dev/null 2>&1; then echo "::error::$PKG_VERSION is already on npm"; exit 1; fi
+          echo "publishing strapi-plugin-writesafe-mcp@$PKG_VERSION (dry run: $DRY_RUN, provenance: $PROVENANCE)"
+      - name: Unit tests
+        run: node --test test/*.test.js
+      - name: Package checks
+        working-directory: .
+        run: |
+          python3 scripts/scan_secrets.py
+          node ci/check_pack.mjs
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          PROVENANCE: ${{ github.event.inputs.provenance }}
+          DIST_TAG: ${{ github.event.inputs.dist_tag }}
+        run: |
+          ARGS=(--access public --tag "$DIST_TAG")
+          [ "$DRY_RUN" = true ] && ARGS+=(--dry-run)
+          [ "$PROVENANCE" = true ] && [ "$DRY_RUN" != true ] && ARGS+=(--provenance)
+          npm publish "${ARGS[@]}"

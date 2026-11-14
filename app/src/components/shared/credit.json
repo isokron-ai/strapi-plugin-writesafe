@@ -1,0 +1,4 @@
+{ "collectionName": "components_shared_credits", "info": { "displayName": "credit" },
+  "attributes": { "role": { "type": "string" },
+                  "author": { "type": "relation", "relation": "manyToOne", "target": "api::author.author" },
+                  "reviewers": { "type": "relation", "relation": "manyToMany", "target": "api::author.author" } } }

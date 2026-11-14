@@ -1,0 +1,5 @@
+{
+  "comment": "Latest patch of every Strapi 5 minor that has strapi.ai.mcp.registerTool (5.47.0 onward). Add each new minor here. resolve_before freezes the rest of the dependency tree for these pins (npm install --before).",
+  "resolve_before": "2026-11-13T00:00:00Z",
+  "versions": ["5.47.1", "5.48.1", "5.49.0", "5.50.2", "5.51.2", "5.52.3", "5.53.0", "5.54.0", "5.55.1", "5.56.0", "5.57.0", "5.58.0", "5.59.0", "5.60.0", "5.61.1", "5.62.0"]
+}

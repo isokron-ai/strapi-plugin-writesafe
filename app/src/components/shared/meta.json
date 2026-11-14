@@ -1,0 +1,9 @@
+{
+  "collectionName": "components_shared_metas",
+  "info": { "displayName": "meta", "description": "1.0 test fixture: a component nested inside shared.item" },
+  "options": {},
+  "attributes": {
+    "note": { "type": "string" },
+    "flag": { "type": "boolean" }
+  }
+}

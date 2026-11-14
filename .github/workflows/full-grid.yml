@@ -1,0 +1,178 @@
+name: Full grid
+
+# The full matrix: unit tests and packaging checks, then every functional suite with every module on (core, media,
+# l10n/history, bulk; ci/run_suite.sh) on every Strapi 5 minor in ci/strapi-versions.json x SQLite, Postgres 16 and
+# MySQL 8.4. One job per Strapi version runs all three databases, so each version installs once.
+# Runs nightly, on release tags (v*) and on manual dispatch. Every push and pull request runs the smaller per-change
+# grid in ci.yml instead. The @latest/@next canary is nightly.yml.
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: 'Space-separated Strapi versions (default: every version in ci/strapi-versions.json)'
+        required: false
+        default: ''
+
+# runs queue rather than cancel each other: a release tag's grid must finish
+concurrency:
+  group: full-grid-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  DO_NOT_TRACK: '1'
+
+jobs:
+  unit:
+    name: Unit tests and package checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      versions: ${{ steps.versions.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Secret scan
+        run: python3 scripts/scan_secrets.py
+      - name: Install the test app's dependencies (the unit tests load @strapi/utils, zod, file-type)
+        working-directory: app
+        run: npm ci --no-audit --no-fund --ignore-scripts --loglevel=error
+      - name: Unit tests (node --test)
+        working-directory: app/src/plugins/writesafe
+        run: node --test test/*.test.js
+      - name: Package contents (npm pack --dry-run)
+        run: node ci/check_pack.mjs
+      - name: Strapi plugin SDK verify
+        run: |
+          mkdir -p "$RUNNER_TEMP/pkg" && cd app/src/plugins/writesafe && npm pack --silent --pack-destination "$RUNNER_TEMP/pkg"
+          cd "$RUNNER_TEMP/pkg" && tar xzf ./*.tgz && cd package && npx -y @strapi/sdk-plugin@6.1.1 verify
+      - id: versions
+        name: Versions to test
+        env:
+          INPUT_VERSIONS: ${{ github.event.inputs.versions }}
+        run: |
+          if [ -n "$INPUT_VERSIONS" ]; then
+            V=$(node -e 'const v=process.argv[1].trim().split(/\s+/);if(!v.every((x)=>/^[0-9A-Za-z.+-]+$/.test(x))){console.error("bad version list");process.exit(1)}console.log(JSON.stringify(v))' "$INPUT_VERSIONS")
+          else
+            V=$(node -p 'JSON.stringify(require("./ci/strapi-versions.json").versions)')
+          fi
+          echo "versions=$V" >> "$GITHUB_OUTPUT"
+          echo "Strapi versions: $V"
+
+  functional:
+    name: Strapi ${{ matrix.strapi }}
+    needs: unit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      max-parallel: 16
+      matrix:
+        strapi: ${{ fromJSON(needs.unit.outputs.versions) }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          # throwaway, per run; the container only lives for this job
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-pg
+          POSTGRES_DB: strapi
+        ports: ['127.0.0.1:5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-my
+          MYSQL_DATABASE: strapi
+        ports: ['127.0.0.1:3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent" --health-interval 5s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: npm cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-node${{ env.NODE_VERSION }}-strapi-${{ matrix.strapi }}-${{ hashFiles('app/package.json', 'ci/strapi-versions.json') }}
+          restore-keys: |
+            npm-${{ runner.os }}-node${{ env.NODE_VERSION }}-strapi-${{ matrix.strapi }}-
+            npm-${{ runner.os }}-node${{ env.NODE_VERSION }}-strapi-
+      - name: Prepare test app (Strapi ${{ matrix.strapi }}, plugin from npm pack)
+        env:
+          STRAPI_VER: ${{ matrix.strapi }}
+        run: ci/prepare_app.sh "$STRAPI_VER" "$RUNNER_TEMP/app"
+      - name: Functional suite on SQLite, Postgres 16, MySQL 8.4
+        env:
+          PG_PORT: '5432'
+          PG_USER: postgres
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+          MYSQL_PORT: '3306'
+          MYSQL_USER: root
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: ci/run_cell.sh "$RUNNER_TEMP/app" "$RUNNER_TEMP/results"
+      - name: Cell summary
+        if: always()
+        env:
+          STRAPI_VER: ${{ matrix.strapi }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/results"
+          # a version that did not install still gets a row (FAIL (prepare)) in the matrix table
+          if [ ! -f "$RUNNER_TEMP/app/.strapi-version" ]; then
+            for db in sqlite postgres mysql; do echo "rc=5 prepare failed" > "$RUNNER_TEMP/results/$STRAPI_VER-$db.status"; done
+          fi
+          cp "$RUNNER_TEMP/app/resolved-package-lock.json" "$RUNNER_TEMP/results/" 2>/dev/null || true
+          python3 ci/matrix_report.py "$RUNNER_TEMP/results" >> "$GITHUB_STEP_SUMMARY" || true
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.strapi }}
+          path: |
+            ${{ runner.temp }}/results/*.status
+            ${{ runner.temp }}/results/*.json
+            ${{ runner.temp }}/results/*.txt
+            ${{ runner.temp }}/results/work-*/strapi-*.log
+            ${{ runner.temp }}/results/work-*/suite-*.txt
+          retention-days: 30
+          if-no-files-found: warn
+
+  report:
+    name: Matrix report
+    needs: functional
+    if: always() && needs.functional.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          path: results
+      - name: Version x database table
+        run: |
+          python3 ci/matrix_report.py results matrix.md
+          cat matrix.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: matrix-report
+          path: matrix.md

@@ -1,0 +1,2 @@
+{ "collectionName": "components_blocks_heroes", "info": { "displayName": "hero" },
+  "attributes": { "heading": { "type": "string" }, "subheading": { "type": "string" } } }

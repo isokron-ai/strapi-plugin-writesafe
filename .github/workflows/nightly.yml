@@ -1,0 +1,243 @@
+name: Nightly Strapi canary
+
+# Every night: run the full suite (SQLite, Postgres 16, MySQL 8.4) against @strapi/strapi@latest and @next, each only
+# when that tag points at a version this job has not tested yet, so quiet nights cost about a minute.
+# A failure (including a timeout) opens an issue in this repository, or comments on the open one for the same tag.
+# @experimental (per-PR builds, several a day) runs only on manual dispatch: tags: "experimental".
+#
+# Tested versions are remembered as cache entries `nightly-tested-<tag>-<version>`. The resolve job RESTORES the entry
+# for the current version every night (an exact-key restore), which keeps it from being evicted as unused while that
+# version is current.
+#
+# The canary job installs and runs an unfrozen dependency tree, so it holds only contents: read and checks out without
+# persisted credentials. Only the separate `report` job, which installs nothing, can write issues.
+
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Space-separated dist-tags to test (latest, next, experimental)'
+        required: false
+        default: 'latest next'
+      force:
+        description: 'Test even if this version was already tested'
+        type: boolean
+        required: false
+        default: false
+  # A pull request that edits this workflow runs it once against @latest (no issue, no tested-marker).
+  pull_request:
+    paths: ['.github/workflows/nightly.yml']
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  DO_NOT_TRACK: '1'
+
+jobs:
+  resolve:
+    name: Resolve dist-tags
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      cells: ${{ steps.cells.outputs.cells }}
+      any: ${{ steps.cells.outputs.any }}
+    steps:
+      - id: v
+        name: Versions behind the dist-tags
+        run: |
+          for tag in latest next experimental; do
+            v=$(npm view "@strapi/strapi@$tag" version 2>/dev/null || true)
+            echo "$tag: ${v:-not published}"
+            echo "$tag=$v" >> "$GITHUB_OUTPUT"
+          done
+      # exact-key restores: a hit means "already tested"; the restore also refreshes the entry's last-access time
+      - id: m_latest
+        if: steps.v.outputs.latest != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/m/latest
+          key: nightly-tested-latest-${{ steps.v.outputs.latest }}
+      - id: m_next
+        if: steps.v.outputs.next != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/m/next
+          key: nightly-tested-next-${{ steps.v.outputs.next }}
+      - id: m_experimental
+        if: steps.v.outputs.experimental != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/m/experimental
+          key: nightly-tested-experimental-${{ steps.v.outputs.experimental }}
+      - id: cells
+        name: Cells to test
+        env:
+          TAGS: ${{ github.event.inputs.tags || (github.event_name == 'pull_request' && 'latest') || 'latest next' }}
+          FORCE: ${{ github.event.inputs.force || (github.event_name == 'pull_request' && 'true') || 'false' }}
+          V_LATEST: ${{ steps.v.outputs.latest }}
+          V_NEXT: ${{ steps.v.outputs.next }}
+          V_EXPERIMENTAL: ${{ steps.v.outputs.experimental }}
+          HIT_LATEST: ${{ steps.m_latest.outputs.cache-hit }}
+          HIT_NEXT: ${{ steps.m_next.outputs.cache-hit }}
+          HIT_EXPERIMENTAL: ${{ steps.m_experimental.outputs.cache-hit }}
+        run: |
+          cells='[]'
+          for tag in $TAGS; do
+            case "$tag" in
+              latest) v=$V_LATEST; hit=$HIT_LATEST ;;
+              next) v=$V_NEXT; hit=$HIT_NEXT ;;
+              experimental) v=$V_EXPERIMENTAL; hit=$HIT_EXPERIMENTAL ;;
+              *) echo "::warning::unknown dist-tag $tag (use latest, next, experimental)"; continue ;;
+            esac
+            if [ -z "$v" ]; then echo "$tag: not published"; continue; fi
+            if ! printf '%s' "$v" | grep -Eq '^[0-9A-Za-z.+-]+$'; then echo "::error::unexpected version string for $tag"; exit 1; fi
+            if [ "$hit" = "true" ] && [ "$FORCE" != "true" ]; then echo "$tag: $v already tested"; continue; fi
+            echo "$tag: $v -> test"
+            cells=$(node -e 'const c=JSON.parse(process.argv[1]);c.push({tag:process.argv[2],version:process.argv[3]});console.log(JSON.stringify(c))' "$cells" "$tag" "$v")
+          done
+          echo "cells=$cells" >> "$GITHUB_OUTPUT"
+          [ "$cells" = '[]' ] && echo "any=false" >> "$GITHUB_OUTPUT" || echo "any=true" >> "$GITHUB_OUTPUT"
+
+  canary:
+    name: Strapi ${{ matrix.cell.tag }} (${{ matrix.cell.version }})
+    needs: resolve
+    if: needs.resolve.outputs.any == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        cell: ${{ fromJSON(needs.resolve.outputs.cells) }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-pg
+          POSTGRES_DB: strapi
+        ports: ['127.0.0.1:5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-${{ github.run_id }}-${{ github.run_attempt }}-my
+          MYSQL_DATABASE: strapi
+        ports: ['127.0.0.1:3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent" --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      CELL_TAG: ${{ matrix.cell.tag }}
+      CELL_VERSION: ${{ matrix.cell.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-node${{ env.NODE_VERSION }}-nightly-${{ matrix.cell.version }}
+          restore-keys: |
+            npm-${{ runner.os }}-node${{ env.NODE_VERSION }}-nightly-
+            npm-${{ runner.os }}-node${{ env.NODE_VERSION }}-strapi-
+      - id: prep
+        name: Prepare test app (today's dependency tree)
+        env:
+          FREEZE: '0'
+        run: ci/prepare_app.sh "$CELL_VERSION" "$RUNNER_TEMP/app"
+      - id: suite
+        name: Functional suite on SQLite, Postgres 16, MySQL 8.4
+        env:
+          PG_PORT: '5432'
+          PG_USER: postgres
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+          MYSQL_PORT: '3306'
+          MYSQL_USER: root
+          MYSQL_CONTAINER: ${{ job.services.mysql.id }}
+        run: ci/run_cell.sh "$RUNNER_TEMP/app" "$RUNNER_TEMP/results"
+      - name: Summary
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/results"
+          if [ ! -f "$RUNNER_TEMP/app/.strapi-version" ]; then
+            for db in sqlite postgres mysql; do echo "rc=5 prepare failed" > "$RUNNER_TEMP/results/$CELL_VERSION-$db.status"; done
+          fi
+          cp "$RUNNER_TEMP/app/resolved-package-lock.json" "$RUNNER_TEMP/results/" 2>/dev/null || true
+          python3 ci/matrix_report.py "$RUNNER_TEMP/results" "$RUNNER_TEMP/results/matrix.md" >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-${{ matrix.cell.tag }}-${{ matrix.cell.version }}
+          path: |
+            ${{ runner.temp }}/results/*.status
+            ${{ runner.temp }}/results/*.json
+            ${{ runner.temp }}/results/*.txt
+            ${{ runner.temp }}/results/*.md
+            ${{ runner.temp }}/results/work-*/strapi-*.log
+          retention-days: 30
+          if-no-files-found: warn
+      # pass or fail, the version counts as tested; a cancel or timeout does not, so it is retried next night
+      - name: Mark version as tested
+        if: (success() || failure()) && github.event_name != 'pull_request'
+        run: mkdir -p "$RUNNER_TEMP/marker" && echo "$CELL_VERSION" > "$RUNNER_TEMP/marker/tested"
+      - uses: actions/cache/save@v4
+        if: (success() || failure()) && github.event_name != 'pull_request'
+        with:
+          path: ${{ runner.temp }}/marker
+          key: nightly-tested-${{ matrix.cell.tag }}-${{ matrix.cell.version }}
+
+  report:
+    name: Open or update issues
+    needs: [resolve, canary]
+    # needs.canary.result is failure when any cell failed or timed out
+    if: always() && needs.canary.result == 'failure' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-*
+          path: art
+      - name: One issue per failing dist-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CELLS: ${{ needs.resolve.outputs.cells }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create strapi-canary --color B60205 --description "Nightly run against a new Strapi release failed" 2>/dev/null || true
+          node -e 'for (const c of JSON.parse(process.env.CELLS)) console.log(c.tag + " " + c.version)' | while read -r TAG VERSION; do
+            DIR="art/nightly-$TAG-$VERSION"
+            # a cell passed when all three databases report rc=0; anything else (missing, rc!=0) is a failure
+            ok=0; for db in sqlite postgres mysql; do grep -qs '^rc=0 ' "$DIR/$VERSION-$db.status" && ok=$((ok+1)); done
+            [ "$ok" = 3 ] && { echo "$TAG $VERSION passed"; continue; }
+            TITLE="Strapi $TAG ($VERSION) breaks the writesafe suite"
+            [ "$TAG" = latest ] || TITLE="Strapi @$TAG ($VERSION) breaks the writesafe suite (pre-release)"
+            {
+              echo "The nightly canary ran the functional suite against \`@strapi/strapi@$TAG\` = \`$VERSION\` and it failed (or timed out)."
+              echo
+              cat "$DIR/matrix.md" 2>/dev/null || echo "(no per-database results: the job failed before the suite, or timed out)"
+              echo
+              echo "Run: $RUN_URL (artifacts hold the Strapi logs and per-check results)."
+            } > body.md
+            EXISTING=$(gh issue list --label strapi-canary --state open --json number,title \
+              --jq "map(select(.title | startswith(\"Strapi $TAG \") or startswith(\"Strapi @$TAG \"))) | .[0].number // empty")
+            if [ -n "$EXISTING" ]; then gh issue comment "$EXISTING" --body-file body.md
+            else gh issue create --label strapi-canary --title "$TITLE" --body-file body.md; fi
+          done

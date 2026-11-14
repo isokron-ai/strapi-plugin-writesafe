@@ -1,0 +1,2 @@
+{ "collectionName": "components_blocks_texts", "info": { "displayName": "text" },
+  "attributes": { "body": { "type": "text" } } }

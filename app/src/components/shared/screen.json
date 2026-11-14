@@ -1,0 +1,9 @@
+{
+  "collectionName": "components_shared_screens",
+  "info": { "displayName": "screen", "description": "1.0 test fixture: a repeatable row with one image (the 200-images case)" },
+  "options": {},
+  "attributes": {
+    "caption": { "type": "string" },
+    "shot": { "type": "media", "multiple": false, "allowedTypes": ["images"] }
+  }
+}

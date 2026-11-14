@@ -1,0 +1,2 @@
+{ "collectionName": "components_shared_seos", "info": { "displayName": "seo" },
+  "attributes": { "metaTitle": { "type": "string" }, "metaDescription": { "type": "text" } } }

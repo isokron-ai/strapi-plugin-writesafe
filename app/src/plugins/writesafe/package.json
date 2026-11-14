@@ -1,0 +1,70 @@
+{
+  "name": "strapi-plugin-writesafe-mcp",
+  "version": "1.0.0-rc.2",
+  "description": "Write-safe MCP tools for Strapi 5's built-in MCP server: version-checked patches, row-level dynamic-zone/component/blocks edits, all-or-nothing batches, idempotency keys, dry runs and structured conflicts; optional modules for bulk jobs, create/delete, find and replace, translation, history and undo, and media import.",
+  "keywords": [
+    "strapi",
+    "strapi-plugin",
+    "strapi-5",
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "concurrency",
+    "optimistic-locking",
+    "bulk-edit",
+    "i18n",
+    "undo"
+  ],
+  "license": "MIT",
+  "author": "IsoKron",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/isokron-ai/strapi-plugin-writesafe.git",
+    "directory": "app/src/plugins/writesafe"
+  },
+  "strapi": {
+    "kind": "plugin",
+    "name": "writesafe",
+    "displayName": "Write-safe MCP",
+    "description": "Version-checked, row-level write tools for Strapi's built-in MCP server."
+  },
+  "type": "commonjs",
+  "main": "./strapi-server.js",
+  "exports": {
+    "./package.json": "./package.json",
+    "./strapi-server": {
+      "source": "./strapi-server.js",
+      "require": "./strapi-server.js",
+      "default": "./strapi-server.js"
+    },
+    "./strapi-admin": {
+      "source": "./admin/index.mjs",
+      "import": "./admin/index.mjs",
+      "default": "./admin/index.mjs"
+    }
+  },
+  "files": [
+    "strapi-server.js",
+    "server/",
+    "admin/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@strapi/strapi": ">=5.47.0 <6",
+    "@strapi/utils": ">=5.47.0 <6"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "file-type": "^21.3.4"
+  }
+}

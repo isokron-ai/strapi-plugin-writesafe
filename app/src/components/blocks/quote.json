@@ -1,0 +1,3 @@
+{ "collectionName": "components_blocks_quotes", "info": { "displayName": "quote" },
+  "attributes": { "text": { "type": "string" },
+                  "author": { "type": "relation", "relation": "manyToOne", "target": "api::author.author" } } }
