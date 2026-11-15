@@ -1,0 +1,166 @@
+# mcp-writecheck manifest for writesafe, IsoKron's Strapi 5 plugin (strapi-plugin-writesafe-mcp), as
+# the workflow .github/workflows/mcp-writecheck.yml runs it: this repository's test app (app/),
+# Strapi 5.62.0 on SQLite, started inside the CI job by ci/writecheck/strapi.sh.
+#
+# Under test: the ws_* tools that writesafe adds to Strapi's MCP endpoint (/mcp, streamable HTTP, an
+# API token as Bearer). The same endpoint also serves Strapi's own content tools; they are not
+# declared here, but the catalog-wide checks (MWS-ANN-4, MWS-SEC-1) see them too.
+#
+# Backend: a throwaway Strapi made in the job, seeded only with test data (bystander pages and an
+# article, and the guard page). Plugin configuration: the documented defaults (builtinUpdates guard,
+# allowForce off), with the optional modules create, delete, bulk, replace, copy and localize on.
+#
+# Control arm: Strapi's REST content API with a full-access API token. It offers no version
+# precondition, no If-Match and no document lock.
+#
+# Environment (values generated in the job, never written here): WS_MCP_TOKEN (the MCP endpoint's
+# token), WS_REST_TOKEN (the REST token, also a canary that must never appear in a result).
+
+mws: "0.9"
+prefix: wsst
+
+server:
+  url: http://127.0.0.1:4812/mcp
+  headers_env:
+    authorization: { env: WS_MCP_TOKEN, prefix: "Bearer " }
+  protocol: auto
+
+target:
+  environment: test
+  confirm: writesafe-dogfood-strapi-5.62.0
+  # list_page is Strapi's own read tool; no tool on this server declares readOnlyHint (writesafe sets no annotations),
+  # so the guard's read-only nature is declared here.
+  guard: { tool: list_page, args: { filters: { title: { $eq: mwsws-guard } } }, path: "results[0].title", pattern: "^mwsws-guard$", read_only: true }
+  allow_hosts: [127.0.0.1]
+
+limits: { write_budget: 6000, writes_per_second: 40, pairs: 40, stale_reps: 3, timeout_ms: 30000, max_fuzz_cases: 200 }
+
+secrets:
+  canaries_env: [WS_REST_TOKEN]       # a credential held in Strapi's own token store (hashed); must never appear in a result
+  token_params: [token, access_token, signature, sig, X-Amz-Signature, X-Amz-Credential]
+  issuing_tools: []                    # no tool exists to issue a credential (NF-16)
+
+canaries:
+  - { name: bystander_pages, tool: list_page, args: { filters: { title: { $startsWith: mwsws-by } }, pageSize: 100 }, path: results }
+
+review:
+  by: IsoKron (rules written before the run, from the plugin's documented error texts)
+  # Covers ws_delete's documented "Nothing was deleted." as well as the write tools' texts.
+  conflict_says_not_applied: "nothing was (written|deleted|published|changed|applied)|not (been )?(applied|written|changed|deleted|published)"
+  conflict_says_reread: "re-read|read (it|the document) again|ws_get"
+  rejection_gives_reason: "must|expected|required|one of|at (most|least)|not allowed|unknown|invalid|refused|does not|cannot|too (long|short|big|small)"
+  stale_writes_disclosed: "stale|not detected|best-effort|last write wins"
+
+resources:
+  # ── pages (api::page.page, not localized): ws_create / ws_get / ws_patch (set) / ws_delete ──────────────────────
+  # ws_patch takes the fields to change inside `set` (an object of field: value); fields left out keep their value
+  # (merge semantics): field-patch mode (spec section 4: a tool taking the object as one argument and calling a merge
+  # patch). Schema evidence: inputSchema.properties.set = { type: object, additionalProperties: {} }, nothing required.
+  # `set` needs expected_version (the `version` token ws_get returns) on hardened; on rc2 it needs expected_version or
+  # force: true (an explicit argument; allowed by rc2's guide default).
+  - name: page
+    create:
+      tool: ws_create
+      args: { uid: "api::page.page", data: { title: "{{marker}}", summary: first summary, note: first note, seo: { metaTitle: seeded title, metaDescription: seeded description }, items: [ { label: one, qty: 1 }, { label: two, qty: 2 }, { label: three, qty: 3 } ] } }
+      id: documentId
+      name_path: data.title
+    read:
+      tool: ws_get
+      args: { uid: "api::page.page", documentId: "{{id}}" }
+      object: "$"
+      # server-managed: the version token and updatedAt change with every write
+      ignore: [version, updatedAt]
+    update:
+      tool: ws_patch
+      mode: field_patch
+      args: { uid: "api::page.page", documentId: "{{id}}", expected_version: "{{version}}", set: { "{{field}}": "{{value}}" } }
+      cases:
+        - { name: clear_summary_empty_string, args: { uid: "api::page.page", documentId: "{{id}}", expected_version: "{{version}}", set: { summary: "" } }, expect: { data.summary: "" } }
+    fields:
+      - { path: data.summary, arg: summary, values: [second summary, third summary], empty: "" }
+      - { path: data.note, arg: note, values: [second note, third note], empty: "" }
+    version: { read: version, arg: expected_version }
+    delete: { tool: ws_delete, args: { uid: "api::page.page", documentId: "{{id}}", expected_version: "{{version}}" } }
+    list: { tool: list_page, args: { filters: { title: { $startsWith: "{{prefix}}" } }, pageSize: 100 }, items: results, id: documentId, name: title }
+    missing_id: wsstmissingdocumentid000
+    # control_delete: the tool's own `cleanup: delete` renders the delete without reading the version first, and
+    # ws_delete requires it
+    cleanup: control_delete
+    # MWS-RETRY-2 on ws_create: the key is the tool argument idempotency_key; a repeat answers with the first receipt
+    # and replayed: true. Strapi's own API offers no idempotency key or lookup by key (backend_key: false). The key
+    # record is a row of the plugin's receipts table in the same database, kept 72 h (documented), so it survives a
+    # restart; the tester does not restart this server (server.url), so step (e) is not run.
+    # vary (step (c)): `agent`, a string label the tool records with the write (ws_history); a create with another agent
+    # label is a different request that the tool would apply under a fresh key. (Without vary, the default, the
+    # argument carrying the marker, is the object `data`, and step (c) would not be tested.)
+    idempotency:
+      args: { uid: "api::page.page", agent: wsst-agent-a, data: { title: "{{marker}}", summary: keyed } }
+      key: { arg: idempotency_key }
+      vary: agent
+      replay_marker: replayed
+      backend_key: false
+    failures:
+      - { name: patch_missing_document, tool: ws_patch, args: { uid: "api::page.page", documentId: "{{missing_id}}", expected_version: "v2.wsstnotaversion", set: { note: x } } }
+      # (A create without the required title is not a failure: Strapi 5 does not enforce required fields on drafts.)
+      - { name: patch_text_field_with_object, tool: ws_patch, args: { uid: "api::page.page", documentId: "{{id}}", if_match: { summary: second summary }, set: { summary: { not: text } } } }
+      - { name: patch_unknown_field, tool: ws_patch, args: { uid: "api::page.page", documentId: "{{id}}", if_match: { nosuchfield: null }, set: { nosuchfield: x } } }
+    # MWS-ATOM-1 / ATOM-2: ws_batch, three items in one all-or-nothing transaction. Row ops need no version, so the
+    # call is valid on items the tester created through the control arm (no list rows), whatever their versions.
+    multi:
+      - tool: ws_batch
+        args:
+          items:
+            - { uid: "api::page.page", documentId: "{{ids[0]}}", ops: [ { op: add, field: items, data: { label: batch row } } ] }
+            - { uid: "api::page.page", documentId: "{{ids[1]}}", ops: [ { op: add, field: items, data: { label: batch row } } ] }
+            - { uid: "api::page.page", documentId: "{{ids[2]}}", ops: [ { op: add, field: items, data: { label: batch row } } ] }
+        effect: { path: "data.items[0].label", value: batch row }
+        invalid_id: wsstmissingdocumentid000
+        # No `report` block: writesafe's answer lists the applied items under `items` only on success; on failure `items`
+        # carries every item with its status (rolled_back, failed, not_attempted), which a path to "the applied items"
+        # cannot express.
+    control:
+      base: http://127.0.0.1:4812
+      auth: { bearer_env: WS_REST_TOKEN }
+      # object "$": the REST answer is { data: {...} }, the same shape as ws_get's, so the field paths (data.summary) hold for both
+      read: { http: [GET, "/api/pages/{{id}}?status=draft&populate=*"], object: "$" }
+      # No patch or write template: the tool renders {{field}} in a control template as the field's read path
+      # (data.summary), and Strapi's REST body needs { data: { summary } } (a { "data.summary": ... } body is refused
+      # with HTTP 400). The control arm for patches is therefore not declared, and MWS-CONC-1 (which needs it) is not
+      # tested by this run.
+      delete: { http: [DELETE, "/api/pages/{{id}}"] }
+      create: { http: [POST, "/api/pages?status=draft"], body: { data: { title: "{{marker}}", summary: first summary, note: first note } }, id: data.documentId }
+
+  # ── articles (api::article.article, localized; slug is a UID the caller may choose): MWS-TGT-3 for ws_create ─────
+  # ws_create without unique_by is a plain create (its description presents it as an upsert only with unique_by).
+  - name: article
+    create:
+      tool: ws_create
+      args: { uid: "api::article.article", locale: en, data: { title: "{{marker}}", slug: "{{?key}}", code: first-code, level: advanced } }
+      id: documentId
+      name_path: data.title
+    read:
+      tool: ws_get
+      args: { uid: "api::article.article", documentId: "{{id}}", locale: en }
+      object: "$"
+      ignore: [version, updatedAt]
+    key: { arg: slug }
+    update:
+      tool: ws_patch
+      mode: field_patch
+      args: { uid: "api::article.article", documentId: "{{id}}", locale: en, expected_version: "{{version}}", set: { "{{field}}": "{{value}}" } }
+    fields:
+      - { path: data.code, arg: code, values: [second-code, third-code] }
+      - { path: data.level, arg: level, values: [basic, advanced] }
+    version: { read: version, arg: expected_version }
+    delete: { tool: ws_delete, args: { uid: "api::article.article", documentId: "{{id}}", locale: en, expected_version: "{{version}}" } }
+    list: { tool: list_article, args: { locale: en, filters: { title: { $startsWith: "{{prefix}}" } }, pageSize: 100 }, items: results, id: documentId, name: title }
+    missing_id: wsstmissingdocumentid000
+    cleanup: control_delete
+    failures:
+      - { name: create_with_level_not_in_enum, tool: ws_create, args: { uid: "api::article.article", locale: en, data: { title: "{{prefix}}-badlevel", level: nosuchlevel } } }
+    control:
+      base: http://127.0.0.1:4812
+      auth: { bearer_env: WS_REST_TOKEN }
+      read: { http: [GET, "/api/articles/{{id}}?status=draft&locale=en"], object: "$" }
+      # no patch/write template (see the page resource)
+      delete: { http: [DELETE, "/api/articles/{{id}}?locale=en"] }

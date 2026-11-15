@@ -1,0 +1,105 @@
+# MCP Write-Safety check of writesafe's tools with mcp-writecheck (isokron-ai/mcp-writecheck-action).
+#
+# The job builds the test app (app/) with the plugin installed from its packed tarball
+# (ci/prepare_app.sh), starts Strapi 5.62.0 on SQLite on 127.0.0.1 inside the runner, seeds test data,
+# and runs the action with ci/writecheck/writecheck.yaml.
+#
+#   plan  on: the plan and its hash (tools/list only; nothing is written).
+#   full  OFF until the owner decides; pin PLAN_HASH from the plan job first, then delete the if: false.
+#
+# For launch day, when mcp-writecheck is public: no secret is used, so pull requests from forks are
+# safe to run (they get no secret anyway). Never pull_request_target. Third-party actions are pinned
+# by full SHA. Every Strapi credential is generated in the job and masked.
+
+name: mcp-writecheck
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '29 3 * * *'
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-writecheck-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  STRAPI_VERSION: 5.62.0
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  DO_NOT_TRACK: '1'
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Pin at launch: read the plan in the plan job's summary (the CLI and this manifest's bytes differ from
+      # the dogfood run), then put its hash here.
+      PLAN_HASH: 0000000000000000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the test app
+        run: ci/writecheck/strapi.sh prepare
+      - name: Start Strapi and seed test data
+        run: ci/writecheck/strapi.sh start
+      - id: plan
+        name: Plan
+        uses: isokron-ai/mcp-writecheck-action@ecce5e34f59d63fdb1c1a46e023ecb05c232a7fe
+        with:
+          manifest: ci/writecheck/writecheck.yaml
+          mode: plan
+          artifact-name: writesafe-plan
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: |
+          if [ "$SEEN" != "$PLAN_HASH" ]; then
+            echo "::error::the plan changed: hash $SEEN, accepted $PLAN_HASH. Read the new plan in the plan step's summary; if it is right, update PLAN_HASH."
+            exit 1
+          fi
+      - name: Stop Strapi
+        if: always()
+        run: ci/writecheck/strapi.sh stop
+
+  # OFF until the owner decides.
+  full:
+    if: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # Pin at launch: read the plan in the plan job's summary (the CLI and this manifest's bytes differ from
+      # the dogfood run), then put its hash here.
+      PLAN_HASH: 0000000000000000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Build the test app
+        run: ci/writecheck/strapi.sh prepare
+      - name: Start Strapi and seed test data
+        run: ci/writecheck/strapi.sh start
+      - name: Full run
+        uses: isokron-ai/mcp-writecheck-action@ecce5e34f59d63fdb1c1a46e023ecb05c232a7fe
+        with:
+          manifest: ci/writecheck/writecheck.yaml
+          mode: full
+          fail-on: must
+          confirm-target: writesafe-dogfood-strapi-5.62.0
+          plan-hash: ${{ env.PLAN_HASH }}
+          artifact-name: writesafe-full
+      - name: Stop Strapi
+        if: always()
+        run: ci/writecheck/strapi.sh stop
