@@ -22,6 +22,14 @@ export default {
       permissions: PERMISSIONS,
       Component: () => import('./JobsPage.mjs').then((mod) => ({ default: mod.JobsPage })),
     });
+    // Settings > Global settings > Write-safe MCP: the effective configuration, and runtime tightening (SettingsPage.mjs)
+    app.addSettingsLink('global', {
+      id: 'writesafe-settings',
+      to: 'writesafe',
+      intlLabel: { id: 'writesafe.settings.name', defaultMessage: 'Write-safe MCP' },
+      permissions: [{ action: 'plugin::writesafe.settings.read', subject: null }],
+      Component: () => import('./SettingsPage.mjs').then((mod) => ({ default: mod.ProtectedSettingsPage })),
+    });
     app.registerPlugin({ id: 'writesafe', name: 'writesafe' });
   },
   bootstrap() {},

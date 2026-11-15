@@ -1,12 +1,13 @@
 'use strict';
 
 /**
- * Module `find` (1.0 hardening, phase 4; fourth review Design H, Gemini's `ws_list`): ws_find, a light read-only query.
+ * Module `find` (1.0 hardening, phase 4; fourth review Design H, an external reviewer's `ws_list`): ws_find, a light
+ * read-only query.
  *
  * Every agent job used to start with Strapi's built-in list_<type>, which returns whole documents and no version token
- * (Gemini's mock run needed list_topic to find category ids). ws_find returns, per matching draft, its documentId,
- * locale, `version` (the ws_get token, computed from the full draft through the engine's helper), updatedAt, whether a
- * published version exists, and a few scalar fields.
+ * (an external reviewer's mock agent run needed list_topic to find category ids). ws_find returns, per matching draft,
+ * its documentId, locale, `version` (the ws_get token, computed from the full draft through the engine's helper),
+ * updatedAt, whether a published version exists, and a few scalar fields.
  *
  * Permissions: the Content Manager permission checker of the caller. The type needs read permission; filters are
  * checked like ws_bulk's (../_lib/filters.js: a filter on a field the token cannot read is refused, never dropped) and

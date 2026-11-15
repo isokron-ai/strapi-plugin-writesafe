@@ -294,7 +294,7 @@ async function describe(strapi, ctx, a, cfg) {
     targets = targets.filter((t) => !pcw.cannot.update(null, permPath(t)));
     spec.fields = targets.map((t) => t.path);
   } else {
-    // Explicit fields are checked up front (1.0 hardening item 6; Gemini review): before, the dry run passed and then
+    // Explicit fields are checked up front (1.0 hardening item 6; external review): before, the dry run passed and then
     // every document of the job failed with forbidden.
     const denied = [...new Set(targets.filter((t) => pcw.cannot.update(null, permPath(t))).map((t) => t.path))];
     if (denied.length) {

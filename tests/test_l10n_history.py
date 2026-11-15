@@ -822,7 +822,7 @@ def rows_where(where, cols='"key"'):
 
 @T
 def t_h1_retention():
-    """Item 5 (Gemini review, fourth review N16): keys (72 h), finished/abandoned jobs, stale claims; no documents kept."""
+    """Item 5 (external review, fourth review N16): keys (72 h), finished/abandoned jobs, stale claims; no documents kept."""
     doc = common.create_page_mcp("th1-ret")
     key = "h1-ret-" + doc
     e, rk = ws("ws_patch", vv({"uid": PAGE, "documentId": doc, "set": {"note": "SECRET-KEYED"}, "idempotency_key": key, "return": "full"}))

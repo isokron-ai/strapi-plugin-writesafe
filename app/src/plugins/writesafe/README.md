@@ -22,10 +22,18 @@ With this plugin's row ops, 0/36 colleague rows were lost; a stale whole-list se
 
 ## Install
 
+```bash
+npm install strapi-plugin-writesafe-mcp
+```
+
 ```js
 // config/plugins.js
-module.exports = () => ({ writesafe: { enabled: true, resolve: './src/plugins/writesafe' } });
+module.exports = () => ({ writesafe: { enabled: true } });
 ```
+
+Add `resolve: './src/plugins/writesafe'` only when you copy the plugin into your app's `src/plugins/writesafe` instead.
+Full steps:
+[docs/install.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/install.md).
 
 Then turn on the MCP server (`config/server.js`: `mcp: { enabled: true }`) and restart Strapi. The tools appear in
 `tools/list` for any admin token that has read, update or publish permission on a supported content type. Options:
@@ -130,7 +138,7 @@ role or token permissions. The in-Strapi job runner (`runner.enabled`) is off by
 module.exports = () => ({
   writesafe: {
     enabled: true,
-    resolve: './src/plugins/writesafe',
+    // resolve: './src/plugins/writesafe',   // only for a copy in src/plugins
     config: {
       builtinUpdates: 'guard',   // keep | guide | guard | hide (default guard since the 1.0 hardening)
       serverInstructions: true,  // MCP server instructions in the initialize reply
@@ -186,6 +194,8 @@ The functional suites run against a real Strapi on SQLite, Postgres 16 and MySQL
 
 ## Links
 
+- Install: [docs/install.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/install.md);
+  connecting a client: [docs/clients.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/clients.md)
 - Reference: [docs/reference.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md)
 - Modules: [bulk and create](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/tools-bulk-create.md),
   [localize and history](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/tools-l10n-history.md),
@@ -195,4 +205,4 @@ The functional suites run against a real Strapi on SQLite, Postgres 16 and MySQL
 - Changes: `CHANGELOG.md`; details per hardening stream:
   [docs/CHANGELOG-1.0-details.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/CHANGELOG-1.0-details.md)
 
-MIT licensed.
+MIT licensed. Built and maintained by [IsoKron](https://isokron.ai/?utm_source=npm&utm_medium=readme&utm_campaign=writesafe).

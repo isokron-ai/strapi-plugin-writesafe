@@ -611,7 +611,7 @@ def t_find():
     err, r, it = one(u, alt="Findable alt %s" % NONCE)
     for label, args in (("name", {"name": "findme-" + NONCE}), ("alt", {"alt": "alt " + NONCE}),
                         ("source_url exact", {"source_url": u}), ("source_url prefix", {"source_url": u.rsplit("/", 1)[0] + "/findme*"}),
-                        # hardening item 9 (Gemini review): a URL copied with a query or fragment found nothing
+                        # hardening item 9 (external review): a URL copied with a query or fragment found nothing
                         ("source_url with a query and fragment", {"source_url": u + "?w=200&h=100#top"}),
                         ("mime + name", {"mime": "image", "name": "findme-" + NONCE}), ("ids", {"ids": [it["id"]]})):
         e, f, _ = ws("ws_media_find", args)

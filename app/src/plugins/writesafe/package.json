@@ -16,11 +16,15 @@
     "undo"
   ],
   "license": "MIT",
-  "author": "IsoKron",
+  "author": "IsoKron (https://isokron.ai)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/isokron-ai/strapi-plugin-writesafe.git",
     "directory": "app/src/plugins/writesafe"
+  },
+  "homepage": "https://github.com/isokron-ai/strapi-plugin-writesafe#readme",
+  "bugs": {
+    "url": "https://github.com/isokron-ai/strapi-plugin-writesafe/issues"
   },
   "strapi": {
     "kind": "plugin",

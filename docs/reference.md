@@ -27,7 +27,7 @@ rich-text blocks. It cannot send component ids, and it has no version check. We 
 | Stale same-field write | 10/10 refused with the current value, the current version and a retry hint |
 | Batch with one stale or invalid item | 20/20 rolled back in full, with per-item status |
 | One-field change: reply size | 193 B (86 tokens), on both a small and a 50-row page. `update_page` returns 825 B on the small page and 9.6 KB (2,950 tokens) on the 50-row page, sent twice |
-| Native agent (claude-opus-5-5, in-house agent harness) with a colleague's block added mid-task | Built-in tools: block lost in 15/15 classified runs, with no conflict signal, and the agent reported "everything else unchanged". Plugin: conflict-recovery rate 14/14 (every retry used the current state from the conflict reply). In 4 more runs no conflict was needed because a row op merged the write. The colleague's change was kept in 18/18 classified runs |
+| Native agent (in-house agent harness) with a colleague's block added mid-task | Built-in tools: block lost in 15/15 classified runs, with no conflict signal, and the agent reported "everything else unchanged". Plugin: conflict-recovery rate 14/14 (every retry used the current state from the conflict reply). In 4 more runs no conflict was needed because a row op merged the write. The colleague's change was kept in 18/18 classified runs |
 
 ## Core tools
 
@@ -523,7 +523,7 @@ The options themselves (with their defaults) are in the package README's Config 
 or replace chunk takes no further document after this long (at least one), so an admin Save behind it waits about that
 long plus one document's write; one slow document or lock wait goes past it. `0`: no cap.
 
-`lenientArgs`: some MCP clients (Claude Desktop is reported to) send booleans and JSON objects as strings. Where a
+`lenientArgs`: some MCP clients are reported to send booleans and JSON objects as strings. Where a
 string can only mean one thing (a boolean argument, an object or array argument, an integer index) it is decoded before
 validation. A field value inside `set` is never decoded (`"true"` stays a string). The advertised JSON Schema is
 unchanged.
@@ -737,8 +737,8 @@ Retention (`retention`, 1.0 hardening; runs at startup and every `pruneEverySeco
   `strapi.ai.mcp.registerTool` in its bootstrap); when that stops working they fail closed (Strapi stops, or the MCP
   server does not start) and `compat_check` and the log say why.
   Server instructions replace an SDK export (`compat/mcp.js`). Agents that ignore instructions and descriptions can still
-  pick `update_<type>` in `keep`/`guide` mode. Measured tool choice (1.0.0-rc.2, headless Claude Code with
-  claude-haiku-5-5 and claude-sonnet-5-5, 51 runs): every write went
+  pick `update_<type>` in `keep`/`guide` mode. Measured tool choice (1.0.0-rc.2, a headless coding agent with
+  two models, 51 runs): every write went
   through a ws_* tool in every `builtinUpdates` mode, including `keep`; 0 built-in writes. Job C1 (a colleague adds a
   block mid-task) 20/20 kept the colleague's block; C2 (edit then publish) 10/10 used ws_patch then ws_publish; the
   module jobs (translate, bulk with a colleague's mid-job change, upsert racing an importer, undo of a corrected bulk

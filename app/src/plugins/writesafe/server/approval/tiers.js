@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Approval tiers for bulk jobs (1.0 hardening, Phase 4 stream G; ChatGPT's design in
- * from an outside design review, trimmed to the owner's ceilings).
+ * Approval tiers for bulk jobs (1.0 hardening, Phase 4 stream G), from an outside design review, trimmed to the
+ * owner's ceilings.
  *
  *   count <= automaticMax                        automatic: the job starts when the agent asks (as before)
  *   automaticMax < count <= twoApproverAbove     one approval by an admin, in the Strapi admin panel

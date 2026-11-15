@@ -19,7 +19,8 @@ const ST = { strapi: null, service: null, leases: null, workers: [], approvalsCf
 
 const bulkMax = (strapi) => require('../modules/_bulk/util').settings(strapi).bulk.maxDocuments;
 /** Effective approval settings (the automatic tier follows writesafe.bulk.maxDocuments). */
-const approvalSettings = (strapi = ST.strapi) => T.settings(ST.approvalsCfg, bulkMax(strapi));
+// + tighten-only overrides from the Settings page (server/settings/overrides.js)
+const approvalSettings = (strapi = ST.strapi) => require('../settings/overrides').approvals(T.settings(ST.approvalsCfg, bulkMax(strapi)));
 const runnerSettings = () => ST.runner;
 /**
  * Approvals work only with adminTokens 'mcp-only' (third review B2): with 'any', admin tokens authenticate on every

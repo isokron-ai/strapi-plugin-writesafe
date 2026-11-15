@@ -90,7 +90,7 @@ function decideOverride(strapi) {
 
 function settings(strapi) {
   const m = { ...DEFAULTS, ...((strapi.config.get('plugin::writesafe') || {}).media || {}) };
-  return { ...m, rules: (m.allow || []).map(NET.parseAllowEntry), override: OVERRIDE, log: (msg) => strapi.log.info(`[writesafe] media: ${msg}`) };
+  return { ...m, rules: require('../../settings/overrides').mediaAllow(m.allow).map(NET.parseAllowEntry), override: OVERRIDE, log: (msg) => strapi.log.info(`[writesafe] media: ${msg}`) };
 }
 
 const matchesType = (mime, patterns) => (patterns || []).some((p) => {
@@ -604,7 +604,7 @@ async function runFind(strapi, ctx, args) {
     if (args.sha256) w.sha256 = { $startsWith: args.sha256.toLowerCase() };
     if (args.source_url) {
       // Imports store the URL without query and fragment (net.redact), so a URL copied with them is stripped the same
-      // way before matching (1.0 hardening item 9; Gemini review: it silently found nothing).
+      // way before matching (1.0 hardening item 9; external review: it silently found nothing).
       const prefix = args.source_url.endsWith('*');
       const u = prefix ? args.source_url.slice(0, -1).replace(/[?#].*$/, '') : stripQuery(args.source_url);
       w.sourceUrl = prefix ? { $startsWith: u } : u;

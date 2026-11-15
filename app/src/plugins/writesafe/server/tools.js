@@ -59,7 +59,7 @@ const uidSchema = (strapi) => {
 };
 
 const position = () => L.pos(z.union([
-  z.enum(['start', 'end']), // enum, not two literals: `const` is refused by Gemini-style validators
+  z.enum(['start', 'end']), // enum, not two literals: `const` is refused by strict JSON-Schema validators that some MCP clients apply
   z.object({ before: z.string().describe('Row key to insert before.') }).strict(),
   z.object({ after: z.string().describe('Row key to insert after.') }).strict(),
   z.object({ index: L.int(z.number().int().min(0)).describe('0-based index in the current list.') }).strict(),

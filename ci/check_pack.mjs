@@ -33,9 +33,9 @@ const unpacked = info.unpackedSize;
 // phase 2 stream A (versions and keys: code, README, CHANGELOG), ~700 kB with streams B, C and D, ~750 kB with phase 3
 // stream E (the bulk job store, plan tokens and their docs), ~830 kB with phase 3 stream F (undo jobs, ref ops). The cap
 // catches fixtures or build output slipping in.
-// TEMPORARY (900 kB, stream F): until the pre-launch package trim, which moves long reference text out of the shipped
-// README and CHANGELOG into the unpackaged docs/ (after stream G merges); then lower it again.
-if (unpacked > 900_000) problems.push(`unpacked size ${unpacked} B is over 900 kB`);
+// ~887 kB after the pre-launch trim and phase 4 (long code comments moved to the unshipped docs/internals.md), ~921 kB
+// with the admin settings page. Cap 1 MB: it is almost all server code.
+if (unpacked > 1_000_000) problems.push(`unpacked size ${unpacked} B is over 1 MB`);
 
 console.log(`${info.name}@${info.version}: ${info.files.length} files, ${info.size} B packed, ${unpacked} B unpacked`);
 for (const f of info.files) console.log(`  ${String(f.size).padStart(7)}  ${f.path}`);

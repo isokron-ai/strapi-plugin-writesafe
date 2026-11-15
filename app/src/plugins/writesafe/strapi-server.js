@@ -43,8 +43,9 @@ module.exports = {
   // are static, and a module's table simply stays empty while it is off (server/modules/index.js, contentTypes).
   contentTypes: { receipt, ...require('./server/modules').contentTypes(), ...require('./server/approval/content-types') },
   // Approvals of bulk jobs and job control for the admin panel's Write-safe jobs page (server/approval/admin-api.js).
-  routes: adminApi.routes,
-  controllers: adminApi.controllers,
+  // + the Settings page API (server/settings): effective config, runtime tightenings
+  routes: { ...adminApi.routes, settings: require('./server/settings').routes },
+  controllers: { ...adminApi.controllers, settings: require('./server/settings').controller },
   policies: adminApi.policies,
   register({ strapi }) {
     const cfg = CFG.get(strapi);
@@ -92,6 +93,7 @@ module.exports = {
     // Approvals, the admin job page and the runner (1.0 hardening, Phase 4 stream G). The RBAC action is registered
     // always (the page is there either way); the gate only when the bulk engine runs; the runner only when enabled.
     await adminApi.registerActions(strapi);
+    await require('./server/settings').bootstrap(strapi); // settings page permissions; runtime overrides loaded first
     const control = require('./server/approval/control');
     await control.init(strapi);
     require('./server/approval/gate').install(strapi);
@@ -112,5 +114,6 @@ module.exports = {
   async destroy() {
     // A stopping replica releases its job leases, so another one takes the jobs over at once.
     await require('./server/approval/control').stopRunner();
+    require('./server/settings').stop();
   },
 };

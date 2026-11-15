@@ -977,7 +977,7 @@ def t_replace_hidden_fields():
     check("a token that cannot read note/items/seo.metaDescription gets no matches there", not e and "note" not in paths and "items.label" not in paths and "summary" in paths, r)
     e, r = ws("ws_replace", {"uid": PAGE, "filters": {"note": {"$contains": "Acme"}}, "find": "Acme", "replace": "Apex", "dry_run": True}, who="agent-noread")
     check("filtering on a field the token cannot read is refused", e and code(r) == "invalid", r)
-    # hardening item 6 (Gemini review): explicit fields are checked in the plan, so the dry run already says it
+    # hardening item 6 (external review): explicit fields are checked in the plan, so the dry run already says it
     e, r = ws("ws_replace", {"uid": PAGE, "filters": {"title": {"$eq": pre}}, "fields": ["note"], "find": "Acme", "replace": "Apex", "dry_run": True}, who="agent-nonote")
     check("dry run with an explicit field the token cannot write -> forbidden up front, naming it", e and code(r) == "forbidden" and r["error"].get("fields") == ["note"], r)
     e, r = ws("ws_replace", {"uid": PAGE, "filters": {"title": {"$eq": pre}}, "fields": ["note"], "find": "Acme", "replace": "Apex"}, who="agent-nonote")

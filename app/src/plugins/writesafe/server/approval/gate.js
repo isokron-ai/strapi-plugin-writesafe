@@ -133,7 +133,8 @@ const ADMIN_PAUSES = ['admin_job', 'permission_changed', 'runner_errors'];
 
 const gate = {
   ceiling(bulkCfg) {
-    return T.ceiling(T.settings(C.ST.approvalsCfg, bulkCfg.maxDocuments));
+    // with the Settings page's tightenings, as beforeCreate checks it (a dry run reports the limit a start applies)
+    return T.ceiling(require('../settings/overrides').approvals(T.settings(C.ST.approvalsCfg, bulkCfg.maxDocuments)));
   },
 
   /** desc: { uid, action, spec } of the dry run. */
@@ -160,7 +161,7 @@ const gate = {
     // over the admin ceiling: refused here too, whatever the caller checked before (review finding 10)
     if (t.tier === 'refused') {
       const max = T.ceiling(C.approvalSettings(strapi));
-      throw new WsError({ code: 'too_many_documents', match_count: count, max_documents: max, message: `${count} documents match; the most an admin can approve for one job is ${max} (config writesafe.approvals.maxDocuments). Narrow the filter or split the job. Nothing was written.` });
+      throw new WsError({ code: 'too_many_documents', match_count: count, max_documents: max, message: `${count} documents match; the most an admin can approve for one job is ${max} (writesafe.approvals.maxDocuments in the config, or lower on the plugin's Settings page). Narrow the filter or split the job. Nothing was written.` });
     }
     if (!t.approvals) return null;
     if (!C.approvalsActive(strapi)) {

@@ -992,7 +992,7 @@ def t_v1_server_instructions_and_steering():
 
 @T
 def t_v1_lenient_args():
-    """Claude Desktop is reported to send booleans and JSON objects as strings."""
+    """Some MCP clients are reported to send booleans and JSON objects as strings."""
     doc = common.create_page_mcp("tp-lenient")
     g = get(doc)
     err, r, _ = ws("ws_patch", {"uid": UID, "documentId": doc, "expected_version": g["version"], "set": json.dumps({"note": "from-string"}), "dry_run": "true"})

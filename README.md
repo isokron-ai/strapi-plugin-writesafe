@@ -15,7 +15,8 @@ media import.
 
 The plugin's own documentation is in [`app/src/plugins/writesafe/README.md`](app/src/plugins/writesafe/README.md), with
 the changes in its [`CHANGELOG.md`](app/src/plugins/writesafe/CHANGELOG.md) and the module references in
-[`docs/`](docs/).
+[`docs/`](docs/). To install it and connect an agent: [`docs/install.md`](docs/install.md) and
+[`docs/clients.md`](docs/clients.md).
 
 ## What is in this repository
 
@@ -63,4 +64,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Report security problems privately as de
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Built and maintained by
+[IsoKron](https://isokron.ai/?utm_source=github&utm_medium=readme&utm_campaign=writesafe).

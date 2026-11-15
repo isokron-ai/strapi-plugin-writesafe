@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Retention for the receipts table (1.0 hardening item 5; Gemini review, fourth review N16). rc.2 only pruned history
+ * Retention for the receipts table (1.0 hardening item 5; external review, fourth review N16). rc.2 only pruned history
  * rows: bulk jobs, their chunk rows, abandoned media claims and every idempotency row stayed for good, and a keyed row's
  * stored reply could hold a whole document (`return: "full"`, ws_delete's `recreate`), so deleted content stayed too.
  * Design notes: docs/internals.md, section "server/retention.js".
