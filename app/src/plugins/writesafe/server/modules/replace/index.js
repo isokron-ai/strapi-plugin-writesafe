@@ -301,6 +301,10 @@ async function describe(strapi, ctx, a, cfg) {
       throw new WsError({ code: 'forbidden', message: `This token cannot write field(s): ${denied.join(', ')}. Leave them out of fields (or leave fields out to search every text field it may write). Nothing was written.`, fields: denied });
     }
   }
+  // MWS-TGT-2, as ws_bulk (item 17), after the cheap checks of the pattern and the fields so their errors come first: a missing or empty filter would scan, and change, every document of the type.
+  if (B.isEmptyFilter(a.filters) && !a.allow_all) {
+    throw new WsError({ code: 'filter_required', message: 'filters is missing or empty, which would search every document of the type. Give a filter, or allow_all: true if every document is really meant. Nothing was written.' });
+  }
   const locale = await E.resolveLocale(strapi, a.uid, a.locale);
   const collect = async () => {
     const scanMax = rcfg.maxScanDocuments;
@@ -347,7 +351,7 @@ function toolDef(strapi, h, cfg) {
     name: 'ws_replace',
     title: 'Write-safe: search and replace text, including inside components, zones and rich text',
     description: 'Find and replace text across the drafts of one content type, also inside components, dynamic-zone rows and blocks (rich text). '
-      + 'Scope it with filters (Strapi filter syntax) and fields (paths like "title", "seo.metaTitle", "items.label", "sections.body", "body"). '
+      + 'Scope it with filters (Strapi filter syntax; required, or allow_all: true for every document) and fields (paths like "title", "seo.metaTitle", "items.label", "sections.body", "body"). '
       + 'Literal by default; regex: true for a regular expression ($1 in replace refers to groups). Run dry_run first: it returns the matching documents, '
       + 'match counts per path, before/after samples and a plan_token. Then send the same call without dry_run, with plan_token: it runs as a resumable ws_bulk job on exactly the documents the dry run found; '
       + 'each document is re-read under lock and replaced in its current text with a version precondition, rows keep their ids. Continue with {job_id} if status is "running". '
@@ -363,7 +367,8 @@ function toolDef(strapi, h, cfg) {
       flags: z.string().optional().describe('Regex flags besides g: any of i, m, s, u.'),
       case_sensitive: L.bool(z.boolean()).optional().describe('Default true.'),
       fields: L.arr(z.array(z.string())).optional().describe('Text paths to search, e.g. ["title", "sections.body", "items.label", "body"]. A top-level name covers all its text paths. Default: all.'),
-      filters: L.obj(z.object({}).catchall(z.any())).optional().describe('Strapi filters narrowing the documents scanned.'),
+      filters: L.obj(z.object({}).catchall(z.any())).optional().describe('Strapi filters narrowing the documents scanned. Required unless allow_all is true.'),
+      allow_all: L.bool(z.boolean()).optional().describe('Scan every document of the type (no filter). Without it an empty or missing filter is refused (filter_required).'),
       publish: z.enum(['if_clean']).optional().describe('"if_clean": also publish each changed document in the same write if its draft equalled its live version before; else it stays a draft (publish_skipped). Needs publish permission.'),
       ...B.jobArgs(L),
     }),

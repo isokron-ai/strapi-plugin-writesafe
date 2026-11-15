@@ -88,8 +88,11 @@ References:
   [row keys](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#row-keys-what-they-can-and-cannot-hit-10).
 - **Errors** carry `retryable` and `requires_reread`.
   [Errors](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#errors).
-- **Retries.** A versioned write sent again is answered with its first reply (`replayed: true`) for 10 minutes;
-  `idempotency_key` covers writes without a version for 72 hours.
+- **Retries.** A versioned write sent again is answered with its first reply (`replayed: true`) for 10 minutes,
+  while what it produced is still in effect. If the content has changed since (someone undid it, or the document came
+  back to the version the request names), it is refused with `replay_superseded` and nothing is written: read again,
+  and send it with an `idempotency_key` if the change is still wanted. `idempotency_key` covers writes without a
+  version for 72 hours.
   [Idempotency](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#idempotency).
 - **Dry runs.** `dry_run: true` runs a patch and rolls it back, returning a field-by-field `diff`; publish and delete
   dry runs are read-only previews.
@@ -143,7 +146,7 @@ module.exports = () => ({
       builtinUpdates: 'guard',   // keep | guide | guard | hide (default guard since the 1.0 hardening)
       serverInstructions: true,  // MCP server instructions in the initialize reply
       baseVersion: 'auto',       // auto | off: pass the version through to Strapi's own check when it exists
-      lenientArgs: true,         // accept "true"/"false" and JSON objects/arrays sent as strings
+      lenientArgs: false,        // default: refuse "true", "5", "{...}" sent as strings for booleans, integers, objects, arrays; true accepts them
       documentServiceLock: true, // lock before every Document Service update/delete/publish (see Safety model)
       allowForce: false,         // may agents send force: true? default: false in guard/hide, true in keep/guide
       // modules: history and find are on unless set to false; the others are off unless set to true (see Tools)
@@ -163,8 +166,15 @@ module.exports = () => ({
 });
 ```
 
+**Argument types are strict by default** (MWS-IN-6). A string sent where a boolean, integer, object or array is
+declared (`"dry_run": "true"`, `"set": "{\"note\": \"x\"}"`) is refused before anything runs, with an error that names
+the argument, the type and the value (`dry_run: must be a JSON boolean (true or false, without quotes); a string was
+sent ("true"). Nothing was changed; ...`). For a client that sends such strings, opt back in with
+`lenientArgs: true`. The advertised schemas declare only the JSON types in both modes.
+
 Every option has a default; only `modules` (and `media.allow` for imports) need to be set. A bad option stops Strapi
-with the reason. Notes on `documentServiceLock`, `bulk.chunkTimeMs`, `lenientArgs` and `allowForce`:
+with the reason, and so does a module name the plugin does not know (`histroy: false` or `bulkk: true` would otherwise
+leave the module on, or off, unnoticed). Notes on `documentServiceLock`, `bulk.chunkTimeMs`, `lenientArgs` and `allowForce`:
 [Config notes](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#config-notes);
 the receipts table and its retention:
 [Receipts table](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#receipts-table).

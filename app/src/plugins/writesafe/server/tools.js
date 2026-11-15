@@ -10,12 +10,45 @@ const F = require('./force');
 const INT = require('./compat/internals');
 
 /**
- * Lenient argument parsing (config.lenientArgs, default on). Some MCP clients send booleans and JSON objects/arrays
- * as strings ("true", "{\"note\":\"x\"}"). Where a string can only mean one thing (a boolean argument, an
- * object/array argument), it is decoded before validation. The advertised JSON Schema is unchanged: zod renders a
- * preprocess step as its target schema.
+ * Argument types (config.lenientArgs; MWS-IN-6). Strict by default since the MWS self-test (D4): a string sent where
+ * the schema declares a boolean, integer, object or array is refused with a message that names the argument, the type
+ * and the value, before the handler runs (isError; nothing is written). lenientArgs: true is the opt-in for clients
+ * that send booleans and JSON objects/arrays as strings ("true", "{\"note\":\"x\"}"): where a string can only mean
+ * one thing, it is decoded before validation. Either way the advertised JSON Schema is the declared type only: zod
+ * renders a preprocess step as its target schema. Declaring string forms was measured to make models send strings.
  */
-let LENIENT = true;
+let LENIENT = false;
+// What a typed argument must be; each entry carries its own article, so the message reads "must be <WANT>".
+const WANT = {
+  boolean: 'a JSON boolean (true or false, without quotes)',
+  integer: 'a JSON integer (without quotes)',
+  object: 'a JSON object, not a string that contains JSON',
+  array: 'a JSON array, not a string that contains JSON',
+  // a row position: "start"/"end" are valid strings, so the message names them (a model must not "fix" "end" into an object)
+  position: '"start", "end" or a JSON object such as {"index": 0}, not a string that contains JSON',
+};
+// The value as the message shows it: at most 40 characters, with "…" when it was cut.
+const shown = (v) => `${JSON.stringify(v.slice(0, 40))}${v.length > 40 ? '…' : ''}`;
+const strictIssue = (want, v, path) => ({
+  code: 'custom', input: v, ...(path ? { path } : {}),
+  message: `must be ${WANT[want]}; a string was sent (${shown(v)}). Nothing was changed; send the call again with that type.`,
+});
+// ctx.addIssue with fatal, not ctx.issues.push. @strapi/utils exports z from 'zod/v4' on every Strapi in the peer range
+// (zod 3.25's v4 build on 5.47 to 5.52, zod 4 from 5.53), whose ctx has issues; the classic zod 3 API's ctx does not,
+// and push would throw a TypeError instead of refusing. fatal stops zod 3 from also running the inner schema ("Expected
+// boolean, received object"); zod 4 stops on z.NEVER. Every flavour gives the same single issue.
+const refuse = (ctx, want, v, path) => {
+  ctx.addIssue({ ...strictIssue(want, v, path), fatal: true });
+  return z.NEVER;
+};
+const refuseString = (want) => (v, ctx) => (typeof v === 'string' ? refuse(ctx, want, v) : v);
+/** Strict step of a row position. The position is a union, which would hide the index's own message (and a JSON object
+ * sent as a string) behind "Invalid input", so both are refused here by name. "start"/"end" pass. */
+const refusePosition = (v, ctx) => {
+  if (typeof v === 'string' && v.trim().startsWith('{')) return refuse(ctx, 'position', v);
+  if (v && typeof v === 'object' && !Array.isArray(v) && typeof v.index === 'string') return refuse(ctx, 'integer', v.index, ['index']);
+  return v;
+};
 const asBool = (v) => (v === 'true' ? true : v === 'false' ? false : v);
 const asJson = (open) => (v) => {
   if (typeof v !== 'string') return v;
@@ -29,13 +62,16 @@ const asInt = (v) => {
   const n = Number(v.trim());
   return Number.isSafeInteger(n) ? n : v;
 };
+// The mode is read when a value is parsed, not when the schema is built, so a schema made before register() (or
+// cached) follows config.lenientArgs too.
+const either = (lenient, strict) => (v, ctx) => (LENIENT ? lenient(v) : strict(v, ctx));
 const L = {
-  bool: (s) => (LENIENT ? z.preprocess(asBool, s) : s),
-  obj: (s) => (LENIENT ? z.preprocess(asJson('{'), s) : s),
-  arr: (s) => (LENIENT ? z.preprocess(asJson('['), s) : s),
-  int: (s) => (LENIENT ? z.preprocess(asInt, s) : s),
-  /** "start"/"end" stay strings; a JSON object in a string is decoded. */
-  pos: (s) => (LENIENT ? z.preprocess(asJson('{'), s) : s),
+  bool: (s) => z.preprocess(either(asBool, refuseString('boolean')), s),
+  obj: (s) => z.preprocess(either(asJson('{'), refuseString('object')), s),
+  arr: (s) => z.preprocess(either(asJson('['), refuseString('array')), s),
+  int: (s) => z.preprocess(either(asInt, refuseString('integer')), s),
+  /** "start"/"end" stay strings; a JSON object in a string is decoded (lenient) or refused by name (strict). */
+  pos: (s) => z.preprocess(either(asJson('{'), refusePosition), s),
 };
 
 // Every reply's error objects get retryable/requires_reread (server/reply.js; 1.0 hardening item 1).
@@ -107,7 +143,7 @@ const apiFor = (strapi) => ({
 
 function register(strapi) {
   const cfg = CFG.get(strapi);
-  LENIENT = cfg.lenientArgs !== false;
+  LENIENT = cfg.lenientArgs === true; // strict unless opted in (MWS-IN-6, self-test D4)
   F.configure(cfg); // before any schema or description is built
   const mods = MOD.load(strapi, cfg);
   if (mods.length) strapi.log.info(`[writesafe] modules on: ${mods.join(', ')}`);
@@ -243,4 +279,8 @@ function register(strapi) {
   INT.noteRegister(strapi, registeredCount); // compat row mcp.register_timing
 }
 
-module.exports = { register, apiFor, asInt };
+module.exports = {
+  register, apiFor, asInt, refuseString, refusePosition, WANT, L, position,
+  /** tests only: switch the argument mode as register() does from config.lenientArgs */
+  _setLenient: (on) => { LENIENT = on === true; },
+};

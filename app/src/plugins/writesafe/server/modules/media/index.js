@@ -640,7 +640,7 @@ async function runFind(strapi, ctx, args) {
 /** Registry entry: tool definitions, built when config.modules.media is true (server/modules/index.js). */
 function tools(strapi, api) {
   validateConfig(strapi.config.get('plugin::writesafe') || {});
-  const L = (api && api.lenient) || { bool: (x) => x, int: (x) => x, arr: (x) => x };
+  const L = (api && api.lenient) || { bool: (x) => x, int: (x) => x, obj: (x) => x, arr: (x) => x };
   OVERRIDE = decideOverride(strapi);
   const S = settings(strapi);
   if (S.override && S.override.ignored) {

@@ -6,6 +6,8 @@
 # probe (hardening phase 2, item 13); then tests/test_phase4d.py in three restarts (phase 4: ws_find, allowForce,
 # history on by default). tests/test_jobs_approval.py (four phases) and tests/test_phase4_rest.py (phase 4: ws_job,
 # publish "if_clean", if_match; two phases) restart Strapi with their own config.
+# Argument types are strict (the shipped default, MWS-IN-6); a restart with WRITESAFE_LENIENT_ARGS=true after
+# test_phase4d runs test_plugin's t_v1_lenient_args only.
 # Every credential is generated here, per run, and never printed: app keys, salts, the admin user and all tokens.
 #
 #   APP_DIR=<prepared app> DB=sqlite|postgres|mysql ci/run_suite.sh
@@ -278,6 +280,19 @@ for VARIANT in ${PHASE4D_VARIANTS-main defaults off}; do
   PASS=$((PASS + ${P:-0})); FAIL=$((FAIL + ${F:-1}))
   grep -E '^(FAIL|HISTORY_COST|FIND_EXAMPLE)' "$WORK/suite-$DB-test_phase4d_$VARIANT.txt"
   echo "test_phase4d ($VARIANT): ${LINE:-no summary (rc=$R)}"
+done
+# MWS self-test D4 (MWS-IN-6): strict argument types are the default (test_plugin's t_v1_strict_args above). The
+# lenientArgs: true opt-in gets its own restart, running only t_v1_lenient_args. LENIENT_PHASES= skips it.
+for LP in ${LENIENT_PHASES-lenient}; do
+  cd "$APP_DIR"; stop; export WRITESAFE_LENIENT_ARGS=true; start; cd "$ROOT"
+  ONLY=t_v1_lenient_args LENIENT_PHASE=1 TEST_RESULTS="${OUT_JSON%.json}-lenient.json" python3 tests/test_plugin.py > "$WORK/suite-$DB-test_plugin_lenient.txt" 2>&1
+  R=$?; [ $R -ne 0 ] && RC=$R
+  unset WRITESAFE_LENIENT_ARGS
+  LINE=$(grep -E 'passed, [0-9]+ failed' "$WORK/suite-$DB-test_plugin_lenient.txt" | tail -1)
+  P=$(echo "$LINE" | sed -nE 's/^([0-9]+) passed.*/\1/p'); F=$(echo "$LINE" | sed -nE 's/.*passed, ([0-9]+) failed.*/\1/p')
+  PASS=$((PASS + ${P:-0})); FAIL=$((FAIL + ${F:-1}))
+  grep -E '^FAIL' "$WORK/suite-$DB-test_plugin_lenient.txt"
+  echo "test_plugin (lenientArgs: true): ${LINE:-no summary (rc=$R)}"
 done
 # In-process check on a copy of the SQLite database (phase 1 re-review B): permission-condition populates never load a
 # whole admin row. SQLite only (it boots the app on a file copy); Strapi is stopped first.

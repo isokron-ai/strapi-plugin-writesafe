@@ -250,7 +250,7 @@ function instructions(uids, mode, modules = [], uncovered = [], { allowForce = f
     '- On error.code version_conflict of a patch: use `current` (or re-read), re-apply only your own change, retry with the new expected_version; never resend your old copy. '
       + 'Of a publish or delete: the content is not what was approved; get approval for the new state first.',
     '- Row keys are bound to the row\'s content: a reply returns new keys only for rows you added or named (`added`, `rekeyed`). For any other row, and on stale_row_key (the row changed since you read it) or row_not_found: read again (ws_get) and use the keys it shows.',
-    '- A versioned write sent again unchanged within 10 minutes is answered with its first reply (replayed: true, current_version); nothing is written twice. To apply the same change again on purpose, read again and send it with an idempotency_key.',
+    '- A versioned write sent again unchanged within 10 minutes is answered with its first reply (replayed: true, current_version); nothing is written twice. If the content changed since (someone undid it), it is refused with replay_superseded and nothing is written: read again, and only if the change is still wanted send it with an idempotency_key.',
     '- Every error says retryable (send the same request again) and requires_reread (read again before any new attempt).',
     // Only when an admin turned it on (config.allowForce; server/force.js): otherwise the argument does not exist.
     ...(allowForce ? ['- `force: true` skips the version check and overwrites later changes by others: send it only when a person explicitly asked to overwrite.'] : []),

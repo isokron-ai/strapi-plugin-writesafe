@@ -34,6 +34,8 @@ const TYPES = {
   plan_mismatch: [false, true],
   plan_expired: [false, true],
   write_failed: [false, true],
+  // MWS self-test D1: an implicit replay whose write is no longer in effect; nothing written, read again
+  replay_superseded: [false, true],
 };
 
 /** The error payload with retryable/requires_reread filled in (unknown codes: false/false). */

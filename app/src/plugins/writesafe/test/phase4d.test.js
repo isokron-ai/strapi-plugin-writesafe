@@ -38,6 +38,17 @@ test('history: config validation accepts history: false and still refuses non-bo
   assert.throws(() => CFG.validator({ modules: { history: 'no' } }), /modules must be an object of booleans/);
 });
 
+test('MWS-CFG-2 / CFG-4: config validation refuses an unknown module name and accepts every known one', () => {
+  assert.throws(() => CFG.validator({ modules: { histroy: false } }), /unknown module\(s\): histroy/, 'misspelled opt-out');
+  assert.throws(() => CFG.validator({ modules: { bulkk: true } }), /unknown module\(s\): bulkk/, 'misspelled opt-in');
+  assert.throws(() => CFG.validator({ modules: { _bulk: true } }), /unknown module\(s\): _bulk/, 'shared code is not a module');
+  const known = ['bulk', 'copy', 'create', 'delete', 'find', 'history', 'localize', 'media', 'replace'];
+  assert.doesNotThrow(() => CFG.validator({ modules: Object.fromEntries(known.map((n) => [n, true])) }));
+  assert.doesNotThrow(() => CFG.validator({ modules: { history: false, find: false } }));
+  assert.doesNotThrow(() => CFG.validator({ modules: {} }));
+  assert.doesNotThrow(() => CFG.validator({}));
+});
+
 // ---------------------------------------------------------------- item 1: ws_find
 const { z } = require('@strapi/utils');
 const M = require('../server/model');
@@ -410,11 +421,10 @@ test('review: deep probes write nothing when the rollback check fails, and refus
   assert.strictEqual(writes.length, 0, 'production: nothing written');
 });
 
-test('review: an unknown module name is warned about even when set to false; refusals list only readable fields', async () => {
-  const warns = [];
+test('review: an unknown module name refuses the start, also when set to false or true; refusals list only readable fields', async () => {
   try {
-    MOD.load({ log: { warn: (m) => warns.push(m) } }, { modules: { histroy: false } });
-    assert.ok(warns.some((w) => /histroy/.test(w)), 'typo in an opt-out is reported');
+    assert.throws(() => MOD.load({ log: { warn: () => {} } }, { modules: { histroy: false } }), /unknown module\(s\): histroy/, 'typo in an opt-out refuses the start');
+    assert.throws(() => MOD.load({ log: { warn: () => {} } }, { modules: { bulkk: true } }), /unknown module\(s\): bulkk/, 'typo in an opt-in refuses the start');
   } finally { MOD.load(null, { modules: {} }); }
   const { strapi } = findStrapi({ docs: [doc(1)] });
   const r = await findTool(strapi).call({ uid: PAGE, fields: ['items'] });

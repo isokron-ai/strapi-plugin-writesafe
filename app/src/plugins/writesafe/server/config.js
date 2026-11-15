@@ -20,8 +20,9 @@
  *   the running Strapi has one (strapi/strapi#27506); 'off' never does. The plugin's own check always runs.
  * modules: { <name>: true } turns on feature modules from server/modules/<name> (their tools, hooks and row ops).
  *   history and find are on unless turned off with { history: false } / { find: false } (1.0 hardening, phase 4).
- * lenientArgs: true (default) accepts booleans, numbers and JSON objects/arrays sent as strings ("true", "{...}"),
- *   which some MCP clients do. The advertised schemas are unchanged.
+ * lenientArgs: false (default since the MWS self-test, D4; MWS-IN-6) refuses a string sent where a boolean, integer,
+ *   object or array is declared, naming the argument, the type and the value. true (opt-in) accepts those values sent
+ *   as strings ("true", "5", "{...}"), which some MCP clients do. The advertised schemas are the same either way.
  * retention: { keyHours: 72, jobHours: 72, claimMinutes: 60, implicitClaimMinutes: 10, pruneEverySeconds: 3600 }: how
  *   long idempotency keys, bulk jobs, unanswered claims and the implicit retry records of versioned writes stay in the
  *   receipts table (server/retention.js).
@@ -48,13 +49,21 @@ const defaults = {
   builtinUpdates: 'guard',
   serverInstructions: true,
   baseVersion: 'auto',
-  lenientArgs: true,
+  lenientArgs: false,
   // 1.0 hardening item 11 (owner decision, 14 Nov): on by default.
   documentServiceLock: true,
   // stream G re-review A1: 'any' (Strapi's behaviour) or 'mcp-only' (admin API tokens refused on every admin route
   // but the MCP endpoint). 'any' by default: admin tokens have uses outside MCP; agents should get 'mcp-only'.
   adminTokens: 'any',
   modules: {},
+};
+
+/** The module names config.modules may use: the folders of server/modules (a leading _ marks shared code). */
+const moduleFolders = () => {
+  const fs = require('fs');
+  const path = require('path');
+  const dir = path.join(__dirname, 'modules');
+  return fs.readdirSync(dir).filter((n) => !n.startsWith('_') && fs.existsSync(path.join(dir, n, 'index.js'))).sort();
 };
 
 function validator(cfg) {
@@ -69,6 +78,14 @@ function validator(cfg) {
   }
   if (cfg.modules !== undefined && (typeof cfg.modules !== 'object' || cfg.modules === null || Object.values(cfg.modules).some((v) => typeof v !== 'boolean'))) {
     throw new Error('writesafe.modules must be an object of booleans, e.g. { bulk: true }');
+  }
+  if (cfg.modules !== undefined) {
+    // MWS-CFG-2 / CFG-4: a misspelled name (histroy: false, bulkk: true) refuses the start instead of being ignored
+    const known = moduleFolders();
+    const unknown = Object.keys(cfg.modules).filter((n) => !known.includes(n));
+    if (unknown.length) {
+      throw new Error(`writesafe.modules names unknown module(s): ${unknown.join(', ')} (known: ${known.join(', ')}). Fix the name; Strapi does not start with an unknown module in the list.`);
+    }
   }
   if (cfg.retention !== undefined) {
     if (!cfg.retention || typeof cfg.retention !== 'object') throw new Error('writesafe.retention must be an object');

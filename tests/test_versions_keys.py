@@ -520,7 +520,10 @@ def tr2_publish_retry_applies_once():
     e, u = spike.tool(A, "unpublish_page", {"documentId": doc})[:2]
     check("review 2a setup: an editor unpublished", not e and published_ids(doc) == [], u)
     e3, r3 = ws("ws_publish", req)
-    check("review 2a: the retry after the unpublish does not publish again", not e3 and r3.get("replayed") is True and published_ids(doc) == [], [r3, published_ids(doc)])
+    # MWS self-test D1 (MWS-RES-1): the live version is no longer what the first publish produced, so the retry is not
+    # answered with that success any more; it is refused (replay_superseded) and still publishes nothing
+    check("review 2a: the retry after the unpublish does not publish again (replay_superseded, not a success)",
+          e3 and code(r3) == "replay_superseded" and err_of(r3).get("current_version") is None and published_ids(doc) == [], [r3, published_ids(doc)])
 
 
 @T
@@ -546,7 +549,11 @@ def tr2_retry_after_colleague_undo_is_not_reapplied():
     e, u = ws("ws_undo", {"receipt_id": r.get("receipt_id")}, B)
     check("review 2c setup: the colleague's undo put the note back", not e and common.rest_get(RA, doc)["note"] == "n0", u)
     e2, r2 = ws("ws_patch", req)
-    check("review 2c: the retry is answered with the first receipt, the undo stands", not e2 and r2.get("replayed") is True and common.rest_get(RA, doc)["note"] == "n0", [r2, common.rest_get(RA, doc)["note"]])
+    # MWS self-test D1 (MWS-RES-1): the write is no longer in effect, so the retry is refused (replay_superseded), not
+    # answered with the first success; it still writes nothing over the undo
+    check("review 2c: the retry is refused (replay_superseded, requires_reread), the undo stands",
+          e2 and code(r2) == "replay_superseded" and err_of(r2).get("requires_reread") is True and common.rest_get(RA, doc)["note"] == "n0",
+          [r2, common.rest_get(RA, doc)["note"]])
 
 
 @T
@@ -589,10 +596,68 @@ def tn1_replay_says_how_to_apply_again():
     e, u = ws("ws_undo", {"receipt_id": r1.get("receipt_id")}, B)   # a human undoes it: back at the agent's version
     e2, r2 = ws("ws_patch", req)
     cur = wget(PAGE, doc)["version"]
-    check("N1: a replay carries current_version and the way to apply it again on purpose (idempotency_key)",
-          not e2 and r2.get("replayed") is True and r2.get("current_version") == cur and "idempotency_key" in (r2.get("hint") or ""), r2)
+    # MWS self-test D1: the undo took the write out of effect, so this is replay_superseded, not a replayed success
+    check("N1: the refused replay carries current_version, the receipt and the way to apply it again on purpose (idempotency_key)",
+          e2 and code(r2) == "replay_superseded" and err_of(r2).get("current_version") == cur and err_of(r2).get("receipt_id") == r1.get("receipt_id")
+          and "idempotency_key" in (err_of(r2).get("message") or ""), r2)
     e3, r3 = ws("ws_patch", {**req, "idempotency_key": "tn1-again-" + NONCE})
     check("N1: with an idempotency_key the same change applies again", not e3 and not r3.get("replayed") and common.rest_get(RA, doc)["note"] == "agent", r3)
+
+
+@T
+def tsd1_aba_fresh_request_is_not_a_false_success():
+    """MWS self-test D1 (MWS-RES-1): A sets review, B sets draft (the document is back at A's first version), A reads
+    again and sends the same request. It must not be answered ok with nothing applied."""
+    doc = new_page("sd1")
+    common.rest_put(RB, doc, {"note": "draft"})
+    v0 = wget(PAGE, doc)["version"]
+    req = {"uid": PAGE, "documentId": doc, "expected_version": v0, "set": {"note": "review"}}
+    e1, r1 = ws("ws_patch", req)
+    check("D1 setup: A sets review", not e1 and common.rest_get(RA, doc)["note"] == "review", r1)
+    e2, r2 = ws("ws_patch", req)
+    check("D1: a plain retry right after the write still replays (one write)", not e2 and r2.get("replayed") is True and r2.get("version") == r1.get("version"), r2)
+    e, b = ws("ws_patch", {"uid": PAGE, "documentId": doc, "expected_version": r1["version"], "set": {"note": "draft"}}, B)
+    check("D1 setup: B sets draft", not e and common.rest_get(RA, doc)["note"] == "draft", b)
+    v0b = wget(PAGE, doc)["version"]
+    check("D1 setup: the re-read gives the first version again (content-hash versions)", v0b == v0, [v0, v0b])
+    e3, r3 = ws("ws_patch", req)
+    note = common.rest_get(RA, doc)["note"]
+    check("D1: the identical fresh request is refused (replay_superseded, isError), not answered ok; nothing written",
+          e3 and code(r3) == "replay_superseded" and not r3.get("ok") and err_of(r3).get("produced_version") == r1.get("version")
+          and err_of(r3).get("current_version") == v0 and note == "draft", [r3, note])
+    e4, r4 = ws("ws_patch", {**req, "idempotency_key": "sd1-" + NONCE})
+    check("D1: resent with an idempotency_key, the change applies", not e4 and not r4.get("replayed") and common.rest_get(RA, doc)["note"] == "review", r4)
+    e5, r5 = ws("ws_patch", {**req, "idempotency_key": "sd1-" + NONCE})
+    check("D1: and that keyed request replays on a retry (the explicit-key path is unchanged)", not e5 and r5.get("replayed") is True, r5)
+
+
+@T
+def tsd1_batch_and_delete_after_aba():
+    """MWS self-test D1 for ws_batch (a chain of two patch items on one document) and ws_delete."""
+    d1 = new_page("sd1-b")
+    v0 = wget(PAGE, d1)["version"]
+    batch = {"items": [{"uid": PAGE, "documentId": d1, "expected_version": v0, "set": {"note": "b-one"}},
+                       {"uid": PAGE, "documentId": d1, "set": {"note": "b-two"}}]}
+    e1, r1 = ws("ws_batch", batch)
+    e2, r2 = ws("ws_batch", batch)
+    check("D1 batch: a plain retry of a chained batch (two items, one document) replays", not e1 and not e2 and r2.get("replayed") is True, [r1, r2])
+    e, u = ws("ws_undo", {"receipt_id": r1.get("receipt_id")}, B)
+    check("D1 batch setup: a colleague undid the batch (back at the first version)", not e and wget(PAGE, d1)["version"] == v0, u)
+    e3, r3 = ws("ws_batch", batch)
+    check("D1 batch: the same batch again is refused (replay_superseded), nothing written",
+          e3 and code(r3) == "replay_superseded" and len(err_of(r3).get("superseded_items") or []) == 2 and wget(PAGE, d1)["version"] == v0, r3)
+    d3 = new_page("sd1-del")
+    req = {"uid": PAGE, "documentId": d3, "expected_version": wget(PAGE, d3)["version"]}
+    e1, r1 = ws("ws_delete", req)
+    e, u = ws("ws_undo", {"receipt_id": r1.get("receipt_id")}, B)
+    eg, g = ws("ws_get", {"uid": PAGE, "documentId": d3})
+    check("D1 delete setup: the colleague's undo restored the document (same documentId)", not e and not eg, [u, g])
+    # informational: the delete rule needs only the document to exist again, not the same version
+    check("D1 delete setup (info): the restored document reads with the version the delete named", not eg and g.get("version") == req["expected_version"], g)
+    e2, r2 = ws("ws_delete", req)
+    eg2, g2 = ws("ws_get", {"uid": PAGE, "documentId": d3})
+    check("D1 delete: the same delete again is refused (replay_superseded), not answered deleted: true; the document stays",
+          e2 and code(r2) == "replay_superseded" and not eg2, [r2, g2])
 
 
 @T

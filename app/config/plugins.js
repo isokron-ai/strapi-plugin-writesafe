@@ -14,7 +14,8 @@ module.exports = ({ env }) => ({
       baseVersion: env('WRITESAFE_BASE_VERSION', 'auto'),
       // any | mcp-only: where admin API tokens are accepted (stream G re-review A1); tests set mcp-only in one phase
       adminTokens: env('WRITESAFE_ADMIN_TOKENS', 'any'),
-      lenientArgs: env.bool('WRITESAFE_LENIENT_ARGS', true),
+      // strict argument types by default (MWS-IN-6, self-test D4); WRITESAFE_LENIENT_ARGS=true is the opt-in
+      lenientArgs: env.bool('WRITESAFE_LENIENT_ARGS', false),
       // Document Service lock (1.0 hardening item 11): WRITESAFE_DOCUMENT_SERVICE_LOCK=false turns it off.
       documentServiceLock: env.bool('WRITESAFE_DOCUMENT_SERVICE_LOCK', true),
       // force (skip the version check) for agents: unset = the plugin's default (off in guard and hide, on in keep/guide)

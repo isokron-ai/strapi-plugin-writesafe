@@ -153,7 +153,7 @@ async function dispatch(strapi, ctx, extra, owner, a) {
 }
 
 function toolDef(strapi, h, cfg) { // eslint-disable-line no-unused-vars
-  const L = h.lenient || { bool: (x) => x, int: (x) => x };
+  const L = h.lenient || { bool: (x) => x, int: (x) => x, obj: (x) => x, arr: (x) => x };
   return {
     name: 'ws_job',
     title: 'Write-safe: list, read, cancel or undo your jobs',

@@ -188,7 +188,7 @@ without publish-state fields). Otherwise the draft is written and left unpublish
 
 | Reply | When |
 |---|---|
-| `published: true`, `published_version` | The draft had no other unpublished change: exactly the version just written is live. |
+| `published: true`, `published_version`, `live_version` | The draft had no other unpublished change: exactly the version just written is live (`live_version` is the live row's version, read back). |
 | `published: false`, `publish_skipped: "draft_had_other_changes"` | Someone else's change is waiting in the draft; publishing would make it live without review. Publish it on its own with ws_publish after a review. |
 | `published: false`, `publish_skipped: "no_live_version"` | The document was never published (or was unpublished). |
 | `published: false`, `publish_skipped: "nothing_changed"` | The patch changed nothing, so there is nothing new to publish. |
@@ -301,6 +301,10 @@ The codes are:
   patch changes first.
 - `not_found`
 - `idempotency_key_reused`
+- `replay_superseded`: a versioned write sent again without an `idempotency_key` matched an earlier identical request,
+  but what that write produced is no longer in effect. Nothing was written. See Idempotency.
+- `filter_required`: ws_bulk or ws_replace got a missing or empty `filters` (it would select every document of the
+  type). Give a filter, or `allow_all: true`.
 - `in_progress`
 - `busy`: the database aborted the write for a deadlock or lock timeout on every attempt (see Concurrency). Nothing
   was written.
@@ -337,10 +341,23 @@ document.
 - It is claimed like a keyed write, under the token, the tool, the target and a hash of the whole request, versions
   included (`v:<sha256>` in the receipts table).
 - The claim is looked up first, inside the write's transaction: the same request sent again is answered with the first
-  reply (`replayed: true`) whatever the document holds now. So a publish is not repeated (publishing does not move the
-  draft version), not even after someone unpublished; a batch whose version does not move does not run its other
-  items twice; a colleague's undo of the write is not overwritten by a late retry; a localize that created a locale is
-  answered with its receipt. Two identical requests at the same moment: one writes, the other gets its reply.
+  reply (`replayed: true`) while what that write produced is still in effect. So a publish is not repeated (publishing
+  does not move the draft version); a batch whose version does not move does not run its other items twice; a
+  localize that created a locale is answered with its receipt. Two identical requests at the same moment: one writes,
+  the other gets its reply.
+- **`replay_superseded`** (MWS-RES-1; MWS self-test D1). Versions are content hashes, so a document that went
+  A -> B -> A reads with the version of A again, and a new request built from that read is byte-identical to the first.
+  A replay therefore checks, inside the transaction, that the target still holds what the first write produced: a
+  patch or a translation, the draft version in the reply (`version`; in a batch, the last version the batch left on
+  that document); a publish (and a patch with `publish: "if_clean"` that published), the version of the live row,
+  read back after the publish (`live_version` in the reply; it can differ from `published_version`, for example when
+  the draft relates to a target that is only a draft); a delete, that every deleted locale is still gone. If not (someone undid or changed it, unpublished, restored the document), the request is refused with
+  `replay_superseded` (`requires_reread`, nothing written) instead of a success that is not in effect. It names
+  `receipt_id`, `produced_version` and `current_version` (for a batch, `superseded_items` and `current_versions`).
+  Nothing is written over the other change: read again, check whether your change is still there, and only if it is
+  still wanted send it with an `idempotency_key`. Any later write to the document counts as a change, so a late retry
+  after an unrelated edit is refused too; and without `APP_KEYS` versions change on every restart, so a retry across
+  a restart is refused.
 - A different request with the same old version (another change) keeps its `version_conflict`. The same request from
   another token is not answered with this token's reply. Two agents that share ONE token share these records, as they
   share idempotency keys: an identical request from the second gets the first one's reply.
@@ -523,10 +540,16 @@ The options themselves (with their defaults) are in the package README's Config 
 or replace chunk takes no further document after this long (at least one), so an admin Save behind it waits about that
 long plus one document's write; one slow document or lock wait goes past it. `0`: no cap.
 
-`lenientArgs`: some MCP clients are reported to send booleans and JSON objects as strings. Where a
-string can only mean one thing (a boolean argument, an object or array argument, an integer index) it is decoded before
-validation. A field value inside `set` is never decoded (`"true"` stays a string). The advertised JSON Schema is
-unchanged.
+`lenientArgs` (default `false` since the MWS self-test, D4; MWS-IN-6): argument types are strict. A string sent where a
+boolean, integer, object or array is declared is refused before the tool runs (`isError`, nothing written), and the
+error names the argument, the type and the value, for example
+`dry_run: must be a JSON boolean (true or false, without quotes); a string was sent ("true"). Nothing was changed; send
+the call again with that type.` A row `position` sent as JSON text is refused the same way, and its message says that
+`"start"` and `"end"` are the valid strings. `lenientArgs: true` is the opt-in for MCP clients that send booleans and JSON objects as
+strings: where a string can only mean one thing (a boolean argument, an object or array argument, an integer) it is
+decoded before validation. That is a documented deviation from MWS-IN-6 (a server should not convert types silently).
+In both modes a field value inside `set` is data and never decoded (`"true"` stays a string), and the advertised JSON
+Schema declares only the JSON type: declaring string forms as well was measured to make models send strings.
 
 ### `force` (allowForce)
 

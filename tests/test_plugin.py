@@ -990,9 +990,76 @@ def t_v1_server_instructions_and_steering():
         check("guide: tools of non-covered types are untouched", all("ws_patch" not in tools[n]["description"] for n in other), other)
 
 
+LENIENT_PHASE = os.environ.get("LENIENT_PHASE") == "1"
+
+
+@T
+def t_v1_strict_args():
+    """MWS self-test D4 (MWS-IN-6): strict argument types are the default. A string sent where a boolean, integer, object
+    or array is declared is refused before the handler runs (isError), naming the argument, the type and the value;
+    nothing is written. ci/run_suite.sh runs t_v1_lenient_args in a phase with lenientArgs: true instead."""
+    if LENIENT_PHASE:
+        return
+    doc = common.create_page_mcp("tp-strict")
+    g = get(doc)
+    before = common.rest_get(RA, doc)
+
+    def issues_text(text):
+        # MCP SDK 1.29 (Strapi 5.47-5.51) prints the zod issues as JSON after the prefix; 1.30 and 2.x print "path: message"
+        i = text.find("[")
+        try:
+            return " ".join("%s: %s" % (".".join(map(str, x.get("path", []))), x.get("message", "")) for x in json.loads(text[i:]))
+        except Exception:
+            return text
+
+    def refused(name, tool, args, arg, typ, sent):
+        err, r, _ = ws(tool, args)
+        text = issues_text(r if isinstance(r, str) else json.dumps(r))
+        check("strict: %s -> isError naming %s, the %s type and the value; nothing changed" % (name, arg, typ),
+              err and arg in text and ("JSON " + typ) in text and json.dumps(sent) in text and "Nothing was changed" in text, r)
+        return text
+    refused("dry_run \"true\"", "ws_patch", {"uid": UID, "documentId": doc, "expected_version": g["version"], "set": {"note": "strict-b"}, "dry_run": "true"},
+            "dry_run", "boolean", "true")
+    refused("set as a JSON string", "ws_patch", {"uid": UID, "documentId": doc, "expected_version": g["version"], "set": json.dumps({"note": "strict-o"})},
+            "set", "object", json.dumps({"note": "strict-o"}))
+    refused("ops as a JSON string", "ws_patch", {"uid": UID, "documentId": doc, "ops": json.dumps([{"op": "add", "field": "items", "data": {"label": "strict-a", "qty": 1}}])},
+            "ops", "array", json.dumps([{"op": "add", "field": "items", "data": {"label": "strict-a", "qty": 1}}])[:40])
+    refused("ws_find limit \"5\"", "ws_find", {"uid": UID, "limit": "5"}, "limit", "integer", "5")
+    refused("a row position index \"0\"", "ws_patch", {"uid": UID, "documentId": doc, "ops": [{"op": "add", "field": "items", "data": {"label": "strict-i", "qty": 1}, "position": {"index": "0"}}]},
+            "index", "integer", "0")
+    pos = json.dumps({"index": 0})
+    text = refused("a row position as a JSON string", "ws_patch",
+                   {"uid": UID, "documentId": doc, "ops": [{"op": "add", "field": "items", "data": {"label": "strict-p", "qty": 1}, "position": pos}]},
+                   "position", "object", pos)
+    check("strict: the position refusal names \"start\" and \"end\" as valid", '"start", "end" or a JSON object' in text.replace('\\"', '"'), text)
+    tools0 = {t["name"]: t for t in spike.rpc(A, "tools/list")[1]["result"]["tools"]}
+    if "force" in tools0["ws_patch"]["inputSchema"]["properties"]:  # offered only with allowForce (run_suite.sh turns it on)
+        refused("force \"true\"", "ws_patch", {"uid": UID, "documentId": doc, "set": {"note": "strict-f"}, "force": "true"}, "force", "boolean", "true")
+    items = json.dumps([{"uid": UID, "documentId": doc, "expected_version": g["version"], "set": {"summary": "strict-batch"}}])
+    refused("ws_batch items as a JSON string", "ws_batch", {"items": items}, "items", "array", items[:40])
+    refused("ws_batch dry_run \"false\"", "ws_batch", {"items": json.loads(items), "dry_run": "false"}, "dry_run", "boolean", "false")
+    refused("ws_get fields as a JSON string", "ws_get", {"uid": UID, "documentId": doc, "fields": '["note"]'}, "fields", "array", '["note"]')
+    after = common.rest_get(RA, doc)
+    check("strict: nothing was written by the refused calls (note, items, summary and updatedAt unchanged)",
+          all(after.get(k) == before.get(k) for k in ("note", "items", "summary", "updatedAt")), [before, after])
+    err, r, _ = ws("ws_get", {"uid": UID, "documentId": doc, "fields": ["note"]})
+    check("strict: ws_get fields as a JSON array is accepted", not err and list(r["data"].keys()) == ["note"], r)
+    err, r, _ = ws("ws_patch", {"uid": UID, "documentId": doc, "expected_version": g["version"], "set": {"note": "strict-ok"}, "dry_run": True})
+    check("strict: the same call with JSON types is accepted", not err and r.get("dry_run") is True, r)
+    err, r, _ = ws("ws_patch", vv({"uid": UID, "documentId": doc, "set": {"note": "true"}}))
+    check("strict: a string field value \"true\" inside set is data, not an argument (accepted, stays a string)", not err and common.rest_get(RA, doc)["note"] == "true", r)
+    s, b, raw = spike.rpc(A, "tools/list")
+    props = {t["name"]: t for t in b["result"]["tools"]}["ws_patch"]["inputSchema"]["properties"]
+    check("strict: the advertised schema declares only the JSON type (no string forms)",
+          props["dry_run"].get("type") == "boolean" and props["set"].get("type") == "object" and props["ops"].get("type") == "array", [props.get("dry_run"), props.get("set", {}).get("type"), props.get("ops", {}).get("type")])
+
+
 @T
 def t_v1_lenient_args():
-    """Some MCP clients are reported to send booleans and JSON objects as strings."""
+    """lenientArgs: true (opt-in since the MWS self-test, D4): some MCP clients are reported to send booleans and JSON
+    objects as strings. Runs only in ci/run_suite.sh's lenient phase (LENIENT_PHASE=1, WRITESAFE_LENIENT_ARGS=true)."""
+    if not LENIENT_PHASE:
+        return
     doc = common.create_page_mcp("tp-lenient")
     g = get(doc)
     err, r, _ = ws("ws_patch", {"uid": UID, "documentId": doc, "expected_version": g["version"], "set": json.dumps({"note": "from-string"}), "dry_run": "true"})

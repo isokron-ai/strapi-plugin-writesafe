@@ -1030,6 +1030,7 @@ async function applyPatch(strapi, ctx, a) {
     await strapi.documents(uid).publish({ documentId, ...(locale ? { locale } : {}) });
     receipt.published = true;
     receipt.published_version = receipt.version;
+    receipt.live_version = await liveVersionOf(strapi, uid, documentId, locale);
     if (MOD.hasAfterWrite()) {
       const pview = M.normalize(strapi, uid, await pc.sanitizeOutput(updatedRaw));
       const pdata = await MOD.afterWrite(ctx, pinfo, pview, pview);
@@ -1049,6 +1050,12 @@ async function applyPatch(strapi, ctx, a) {
 }
 
 /** Version-checked publish of the current draft. Must run inside a transaction. */
+/** The version of a document's live (published) row, or null when it has none. */
+async function liveVersionOf(strapi, uid, documentId, locale) {
+  const live = await strapi.documents(uid).findOne({ documentId, ...(locale ? { locale } : {}), status: 'published', populate: M.populateFor(strapi, uid) });
+  return live ? versionOfRaw(strapi, uid, live) : null;
+}
+
 async function applyPublish(strapi, ctx, a) {
   const { uid } = a;
   checkUid(strapi, uid);
@@ -1081,6 +1088,9 @@ async function applyPublish(strapi, ctx, a) {
   const check = a.dry_run ? await PREVIEW.validatePublish(strapi, uid, documentId, locale || doc.locale || null, raw) : null;
   if (!a.dry_run) await strapi.documents(uid).publish({ documentId, ...(locale ? { locale } : {}) });
   const out = { ok: true, action: 'publish', documentId, locale: doc.locale || null, published_version: versionOfRaw(strapi, uid, raw) };
+  // The version of the live row this publish produced, read back in the transaction: a replay compares the live row
+  // with it (MWS-RES-1). It can differ from published_version, e.g. a relation to a target that is only a draft.
+  if (!a.dry_run) out.live_version = await liveVersionOf(strapi, uid, documentId, locale);
   if (check) {
     out.preview = true;
     if (check.note) out.preview_note = check.note;
@@ -1233,12 +1243,12 @@ async function storedOutcome(strapi, key, rh, args, implicit = false) {
  * the transaction.
  */
 async function annotateReplay(strapi, tool, args, replay, implicit) {
-  const cur = async (a) => {
+  const cur = async (a, status = 'draft') => {
     try {
       if (!a || !a.uid || !writableUids(strapi).includes(a.uid)) return null;
       const locale = await resolveLocale(strapi, a.uid, a.locale);
       const documentId = await resolveDocumentId(strapi, a.uid, a.documentId, locale);
-      const raw = await strapi.documents(a.uid).findOne({ documentId, ...(locale ? { locale } : {}), ...(hasDP(strapi, a.uid) ? { status: 'draft' } : {}), populate: M.populateFor(strapi, a.uid) });
+      const raw = await strapi.documents(a.uid).findOne({ documentId, ...(locale ? { locale } : {}), ...(hasDP(strapi, a.uid) ? { status } : {}), populate: M.populateFor(strapi, a.uid) });
       return raw ? versionOfRaw(strapi, a.uid, raw) : null;
     } catch {
       return null;
@@ -1251,6 +1261,26 @@ async function annotateReplay(strapi, tool, args, replay, implicit) {
   } else {
     out.current_version = await cur(args);
   }
+  // An implicit record matches on the request alone. Versions are content hashes, so a document that went A -> B -> A
+  // reads with the version of A again, and a NEW request built from that fresh read is byte-identical to the first one.
+  // Answering it with the stored success would report a change that is not in effect (MWS-RES-1). Replay only while
+  // the target still holds what the first write produced; otherwise refuse, saying nothing was written.
+  if (implicit) {
+    const now = { current_version: out.current_version, current_versions: out.current_versions };
+    // a publish produced a live version, not a draft version: compare the live one
+    if (tool === 'ws_publish' || replay.published === true) now.live_version = await cur(args, 'published');
+    if (tool === 'ws_batch' && Array.isArray(args.items)) {
+      now.live_versions = await Promise.all(args.items.map((it) => (it && it.action === 'publish' ? cur(it, 'published') : null)));
+    }
+    // a delete produced "gone": every locale it deleted must still be gone
+    if (tool === 'ws_delete') {
+      const pv = replay.previous_version;
+      const locs = pv && typeof pv === 'object' && !Array.isArray(pv) ? Object.keys(pv) : null;
+      now.existing = (locs ? await Promise.all(locs.map((l) => cur({ ...args, locale: l }))) : [out.current_version]).filter(Boolean);
+    }
+    const sup = supersededSince(tool, args, replay, now);
+    if (sup) throw supersededError(replay, sup, out);
+  }
   out.hint = implicit
     ? 'Replayed: this is the reply of the identical request you sent before. It was applied once; nothing was written now. '
       + 'current_version is the version now. To apply this change again on purpose, read the document again (ws_get) and send the request with an idempotency_key.'
@@ -1260,16 +1290,100 @@ async function annotateReplay(strapi, tool, args, replay, implicit) {
 }
 
 /**
+ * Whether the target of a replayed implicit record no longer holds what the first write produced (MWS-RES-1), or null.
+ * - ws_patch, ws_localize (and any reply with `version`): the draft must still have that version; a ws_patch that
+ *   published (publish: "if_clean") also needs its live row unchanged.
+ * - ws_publish: the live row must still have `live_version`, the version read back after the publish (older replies:
+ *   `published_version`). The draft version, which a publish leaves unchanged, says nothing here.
+ * - ws_delete: every deleted locale must still be gone (`now.existing` lists the versions found).
+ * - ws_batch, per item: a patch item is judged by the last version the batch left on its document (a later patch item
+ *   of the same document carries on from it, item 16c), a publish item by its live version.
+ * Replies that state nothing comparable are never superseded. `now` holds what annotateReplay read inside the write's
+ * transaction: current_version(s) (drafts), live_version(s), existing.
+ */
+function supersededSince(tool, args, replay, now) {
+  const isStr = (v) => typeof v === 'string' && v !== '';
+  if (!replay || typeof replay !== 'object') return null;
+  if (tool === 'ws_delete') {
+    return Array.isArray(now.existing) && now.existing.length ? { kind: 'delete', produced: null, current: now.existing[0] } : null;
+  }
+  // a publish produced a live row: live_version (read back after the publish), or published_version in replies stored
+  // before live_version was recorded
+  const liveOf = (r) => (isStr(r.live_version) ? r.live_version : r.published_version);
+  if (tool === 'ws_publish') {
+    const produced = liveOf(replay);
+    return isStr(produced) && now.live_version !== produced ? { kind: 'publish', produced, current: now.live_version ?? null } : null;
+  }
+  if (tool === 'ws_batch') {
+    if (!Array.isArray(replay.items) || !Array.isArray(now.current_versions)) return null;
+    const src = Array.isArray(args && args.items) ? args.items : [];
+    const cv = now.current_versions;
+    const items = [];
+    replay.items.forEach((it, i) => {
+      if (!it || typeof it !== 'object') return;
+      if (src[i] && src[i].action === 'publish') {
+        const lv = Array.isArray(now.live_versions) ? now.live_versions[i] ?? null : null;
+        const produced = liveOf(it);
+        if (isStr(produced) && lv !== produced) items.push({ index: i, ref: it.ref ?? String(i), kind: 'publish', produced, current: lv });
+        return;
+      }
+      if (!isStr(it.version)) return;
+      // Versions bind uid, documentId and locale, so items whose documents read with the same version share one.
+      let last = it.version;
+      if (isStr(cv[i])) {
+        for (let j = i + 1; j < replay.items.length; j++) {
+          const later = replay.items[j];
+          if (cv[j] === cv[i] && !(src[j] && src[j].action === 'publish') && later && isStr(later.version)) last = later.version;
+        }
+      }
+      if (cv[i] !== last) items.push({ index: i, ref: it.ref ?? String(i), kind: 'patch', produced: last, current: cv[i] ?? null });
+    });
+    return items.length ? { kind: 'batch', items } : null;
+  }
+  if (isStr(replay.version) && now.current_version !== replay.version) {
+    return { kind: 'patch', produced: replay.version, current: now.current_version ?? null };
+  }
+  // a ws_patch with publish: "if_clean" that published: its live row must still be what it published
+  if (replay.published === true && isStr(liveOf(replay)) && now.live_version !== liveOf(replay)) {
+    return { kind: 'publish', produced: liveOf(replay), current: now.live_version ?? null };
+  }
+  return null;
+}
+
+/** The replay_superseded refusal (MWS-RES-1): nothing was written now, and the earlier success may no longer hold. */
+function supersededError(replay, sup, out) {
+  const receipt = replay.receipt_id ? ` (receipt ${replay.receipt_id})` : '';
+  const what = {
+    delete: 'the document it deleted exists again',
+    publish: 'the live version is no longer the one it published',
+    patch: 'the document no longer has the version that write produced',
+    batch: `item(s) ${sup.items ? sup.items.map((x) => x.ref).join(', ') : ''} no longer hold what that write produced`,
+  }[sup.kind];
+  return new WsError({
+    code: 'replay_superseded',
+    requires_reread: true,
+    message: `This identical request was applied before${receipt}, but the content has changed since: ${what}, so that change may no longer be in effect. `
+      + 'Nothing was written now. Read the document again (ws_get) and check whether your change is still there. If someone undid or replaced it on '
+      + 'purpose, leave it. If the change is still wanted, send it again with an idempotency_key.',
+    receipt_id: replay.receipt_id || null,
+    ...(sup.kind === 'batch'
+      ? { superseded_items: sup.items, current_versions: out.current_versions }
+      : { produced_version: sup.produced, current_version: sup.current }),
+  });
+}
+
+/**
  * Implicit idempotency (1.0 hardening item 16d; Design B of the fourth review): a version-checked write applies once.
  *
  * Every write that carries a version (expected_version, a ws_delete version map, expected_source_version, or a
  * ws_batch item's expected_version) and no idempotency_key is claimed like a keyed write, under a key derived from the
  * token, the tool, the target and the hash of the WHOLE request, versions included (the request hash is bound to the
  * version): "v:<sha256>". The claim is looked up first, inside the write's transaction and before anything else runs
- * (phase 2 A review, finding 2): the same request sent again is answered with the first reply (replayed: true) whatever
- * the document holds now, so it applies once even when its version check would still pass (a publish does not move the
- * draft version; a batch's version may not move; a colleague's undo can bring the document back to the named
- * version). A concurrent duplicate waits on the claim's unique index, then gets the reply. Any other request with the
+ * (phase 2 A review, finding 2): the same request sent again is answered with the first reply (replayed: true), so it
+ * applies once even when its version check would still pass (a publish does not move the draft version; a batch's
+ * version may not move; a colleague's undo can bring the document back to the named version). The reply is given only
+ * while what that write produced is still in effect; otherwise the request is refused with replay_superseded and
+ * nothing is written (annotateReplay, MWS-RES-1). A concurrent duplicate waits on the claim's unique index, then gets the reply. Any other request with the
  * same old version has another request hash, finds nothing, and keeps its version_conflict.
  * The stored reply is stripped of documents (retention.stripReceipt: no `document`, `recreate` or `diff`); records
  * live as long as idempotency keys (retention.keyHours, 72 h). Writes without a version keep needing idempotency_key.
@@ -1649,7 +1763,7 @@ module.exports = {
   isLocalized, isSingle, checkRefs, checkRefValue, checkComponentData, requestHash, RECEIPT_UID, DryRun,
   MEDIA, lockAndRead, conflict, assertVersion, RETRY_HINTS, resolveLocale, resolveDocumentId, permissionChecker, checkUid, hasDP, versionOfRaw, MOD,
   keyError, EPOCH, checkPublishArg,
-  versionsIn, implicitKey, applyRowOps, preconditionFields, isUniqueViolation, liveDiff, uncoveredUids,
+  versionsIn, implicitKey, supersededSince, supersededError, annotateReplay, applyRowOps, preconditionFields, isUniqueViolation, liveDiff, uncoveredUids,
   lockBatchRows, ensureReceiptIndex, watchQueryErrors, withCaller, tokenScope, requireUniqueIndex, KEYS, resolvedArgs, resolvePos, WsError, BatchAbort, applyPatch, applyPublish, applyBatch, runWrite, batchAbortView, getDoc, writableUids, mapStrapiError, RETRY_HINT,
 };
 // [bulk, 1.0 hardening item 22] the running write attempt's watch (deadlock / lock timeout seen), so a per-item

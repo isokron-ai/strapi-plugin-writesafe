@@ -36,11 +36,15 @@ const isOn = (on, name) => on[name] === true || (DEFAULT_ON.includes(name) && on
 function load(strapi, cfg) {
   const on = (cfg && cfg.modules) || {};
   const all = extraForTests || discover();
+  // MWS-CFG-2 / CFG-4: an unknown name in the list refuses the start, also for `false`. A warning left a misspelled
+  // opt-out (histroy: false) with history's write tool (ws_undo) on, and a misspelled opt-in without its tools,
+  // unnoticed. config.js's validator refuses it first, at config load; this covers a load with another module set.
+  const unknown = Object.keys(on).filter((n) => !all.some((m) => m.name === n));
+  if (unknown.length) {
+    throw new Error(`[writesafe] config.modules names unknown module(s): ${unknown.join(', ')} (known: ${all.map((m) => m.name).join(', ')}). Fix the name; Strapi does not start with an unknown module in the list.`);
+  }
   loaded = all.filter((m) => isOn(on, m.name));
   ops(); // fail at startup, not at the first request, on a clashing op name or schema key
-  // also for `false`: a typo in an opt-out (history: false spelled wrong) would otherwise leave the module on silently
-  const unknown = Object.keys(on).filter((n) => !all.some((m) => m.name === n));
-  if (unknown.length && strapi) strapi.log.warn(`[writesafe] config.modules names unknown module(s): ${unknown.join(', ')} (known: ${all.map((m) => m.name).join(', ')})`);
   return loaded.map((m) => m.name);
 }
 

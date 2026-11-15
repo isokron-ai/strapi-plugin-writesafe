@@ -8,6 +8,20 @@ the Upgrading notes below are complete.
 ## Unreleased (1.0 hardening)
 
 ### Summary
+- **MWS self-test fixes** (D1, D3, D4, D5 of the self-test against MWS 0.9):
+  **(contract)** A versioned write sent again without an `idempotency_key` is answered with its first reply only
+  while what that write produced is still in effect (patch and translation: the draft version; publish: the live
+  row's version, which publish replies now carry as `live_version`; delete: still gone; batch: per item). Otherwise it is refused with `replay_superseded` (`requires_reread`,
+  nothing written), naming `receipt_id`, `produced_version` and `current_version`; before, a document that went
+  A -> B -> A was answered `ok: true` with nothing applied (MWS-RES-1).
+  **(contract)** ws_replace needs a filter, as ws_bulk does: a missing or empty `filters` is refused with
+  `filter_required`, also on a dry run; `allow_all: true` is the opt-in (MWS-TGT-2).
+  **(contract)** An unknown name in `config.modules` (`histroy: false`, `bulkk: true`) stops Strapi at startup instead
+  of a warning (MWS-CFG-2, CFG-4).
+  **(contract)** **Behaviour change (D4, MWS-IN-6): strict argument types by default.** `lenientArgs` now defaults to `false`: a string
+  sent where a boolean, integer, object or array is declared (`"dry_run": "true"`, `"limit": "5"`, `"set": "{...}"`) is
+  refused before the tool runs (`isError`, nothing written), naming the argument, the type and the value. The
+  advertised schemas are unchanged. To opt back in: `lenientArgs: true`.
 - **Jobs, `publish: "if_clean"`, `if_match`** (phase 4): `ws_job` lists, reads, cancels and undoes the token's own
   ws_bulk, ws_replace and undo jobs (undo jobs can now be cancelled). `publish: "if_clean"` on ws_patch and on ws_bulk
   patch and ws_replace jobs also publishes in the same write, only when the draft had no other unpublished change.
@@ -50,6 +64,17 @@ the Upgrading notes below are complete.
   permission conditions (Strapi's Author role) work on their own entries; receipts have a retention.
 
 ### Upgrading
+
+#### MWS self-test fixes (D1, D3, D4, D5)
+- **Agents and scripts that resend a versioned write:** handle `replay_superseded` like `version_conflict` without a
+  retry version: read again (ws_get), check whether the change is still there, and send it with an `idempotency_key`
+  only if it is still wanted. A late retry after any later write to the document is refused this way too.
+- **Callers of ws_replace without a filter:** add `allow_all: true` to the dry run and to the start (the `plan_token`
+  covers it), or give a filter. A job started from an unfiltered plan before the upgrade resumes with `{job_id}`.
+- **Config:** check `config.modules` (and `WRITESAFE_MODULES` in the test app) for misspelled names before upgrading;
+  Strapi does not start with one.
+- **Clients that send booleans, integers or JSON as strings:** they now get a type error naming the argument. Fix the
+  client, or opt back in with `lenientArgs: true` in the plugin config (`WRITESAFE_LENIENT_ARGS=true` in the test app).
 
 #### Jobs, `publish: "if_clean"`, `if_match` (phase 4)
 - **Agents and scripts that call ws_bulk or ws_replace:** read a job with `ws_job {action: "status", job_id}` (same

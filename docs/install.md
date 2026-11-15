@@ -72,7 +72,8 @@ module.exports = () => ({
 });
 ```
 
-`modules` takes booleans only; a module name the plugin does not know is logged as a warning at startup. Every other
+`modules` takes booleans only; a module name the plugin does not know stops Strapi at startup, naming it and the
+known ones (a misspelled `histroy: false` would otherwise leave history on). Every other
 option has a default. One changes Strapi's own tools: `builtinUpdates` is `'guard'` by default, so the built-in
 `update_<type>` and `write_<type>` refuse whole-list and component writes on existing content (pointing the agent to
 `ws_patch`) and `publish_<type>` is not listed. `'keep'` leaves them unchanged. All options:

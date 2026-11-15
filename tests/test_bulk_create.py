@@ -4,7 +4,8 @@ against a running Strapi with the spike tokens plus scripts/setup_bulk_tokens.mj
 Run: python3 tests/test_bulk_create.py   (exit 1 on any failure; writes tests/results/test_bulk_create<-TAG>.json)
 ONLY=t_create,t_copy python3 tests/test_bulk_create.py runs the tests whose names contain one of those strings.
 BULK_RESTART_CMD="<command that starts Strapi again>" and BULK_PID_FILE=<pid file> enable the kill-and-resume test.
-MODULES_OFF=1 checks a server started with WRITESAFE_MODULES='{"bulk":false,"create":false,"delete":false,"replace":false,"copy":false}'.
+MODULES_OFF=1 checks a server started without the optional modules (WRITESAFE_MODULES empty or unset; config.modules
+must name known modules only, or Strapi does not start).
 """
 import json, os, signal, subprocess, sys, threading, time, traceback, uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -965,6 +966,33 @@ def t_replace_scope_regex_and_safety():
     check("an invalid regex refused", e and code(r) == "invalid", r)
     e, r = ws("ws_replace", {"uid": PAGE, "find": "a", "replace": "b", "fields": ["seo.nope"], "dry_run": True})
     check("an unknown text path refused with the allowed list", e and code(r) == "invalid" and "items.label" in r["error"]["allowed"], r)
+
+
+@T
+def t_replace_filter_required():
+    """MWS self-test D3 (MWS-TGT-2): ws_replace, like ws_bulk, refuses a missing or empty filter unless allow_all: true."""
+    pre = "rpf-%s" % RUN
+    mark = "Zq%sMark" % RUN
+    d1 = common.create_page_mcp(pre + "-a")
+    d2 = common.create_page_mcp(pre + "-b")
+    for d in (d1, d2):
+        common.rest_put(RB, d, {"summary": "has %s inside" % mark})
+    base = {"uid": PAGE, "fields": ["summary"], "find": mark, "replace": "done"}
+    for label, extra in (("omitted", {}), ("{}", {"filters": {}})):
+        for dr in (True, False):
+            e, r = ws("ws_replace", dict(base, dry_run=True, **extra) if dr else dict(base, **extra))
+            check("no filter (%s%s) -> filter_required, nothing written" % (label, ", dry run" if dr else ""),
+                  e and code(r) == "filter_required" and "job_id" not in r and mark in common.rest_get(RA, d1)["summary"], r)
+    e, r = ws("ws_replace", dict(base, allow_all=False, dry_run=True))
+    check("allow_all: false is no opt-in", e and code(r) == "filter_required", r)
+    e, d = dry("ws_replace", dict(base, allow_all=True))
+    check("allow_all: true lifts filter_required: the dry run scans every document and finds the 2 with the text",
+          not e and d["documents_matched"] == 2 and d.get("plan_token"), d)
+    e, r = ws("ws_replace", dict(base, plan_token=d["plan_token"]))
+    check("a start that drops allow_all is refused (filter_required), nothing written", e and code(r) == "filter_required" and mark in common.rest_get(RA, d2)["summary"], r)
+    e, r = ws("ws_replace", dict(base, allow_all=True, plan_token=d["plan_token"]))
+    check("the start with allow_all and the plan_token replaces in both documents",
+          not e and r["status"] == "done" and r["totals"]["ok"] == 2 and all(common.rest_get(RA, x)["summary"] == "has done inside" for x in (d1, d2)), r)
 
 
 @T

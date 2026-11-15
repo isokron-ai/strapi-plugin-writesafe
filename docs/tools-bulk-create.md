@@ -356,7 +356,10 @@ Search and replace in the text of one content type. It reaches into:
 ```
 
 **Scope**
-- `filters` narrows the documents.
+- `filters` narrows the documents. It is required, as for ws_bulk (MWS-TGT-2): a missing or empty filter is refused
+  with `filter_required`, also on a dry run, because it would scan and change every document of the type. Send
+  `allow_all: true` when every document is really meant; the dry run's `plan_token` covers `allow_all`, so the start
+  must send it too.
 - `fields` takes paths such as `title`, `seo.metaTitle`, `items.label`, `sections.body` (any zone component with
   that field) and `body`.
 - The default is every text path the token can write.
@@ -527,6 +530,7 @@ undoable (`within_budget`).
 
 Find and replace across the text of matching documents: scalars, components, zones, item labels and blocks text.
 Literal by default, `regex: true` for a regular expression (run in a sandbox with per-document and total time limits).
+`filters` is required (`filter_required`), or `allow_all: true` for every document of the type.
 `fields` narrows the paths; by default every text path the token can write. An explicit field the token cannot write is
 refused up front (`forbidden`, listing it), also on the dry run. Dry run lists matches with samples and returns a
 `plan_token`; the start (the same call with it) runs through the bulk engine (chunks, resume, per-item status). The scan
