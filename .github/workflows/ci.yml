@@ -48,6 +48,11 @@ jobs:
       - name: Install the test app's dependencies (the unit tests load @strapi/utils, zod, file-type)
         working-directory: app
         run: npm ci --no-audit --no-fund --ignore-scripts --loglevel=error
+      # The stale form unit tests (test/stale-form.test.js) open an in-memory SQLite database through knex: build the
+      # one native module they need (its install script is the only script run here).
+      - name: Build the SQLite driver for the unit tests
+        working-directory: app
+        run: npm rebuild better-sqlite3 --loglevel=error
       - name: Unit tests (node --test)
         working-directory: app/src/plugins/writesafe
         run: node --test test/*.test.js
