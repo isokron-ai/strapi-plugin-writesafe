@@ -289,7 +289,11 @@ The codes are:
   is left out, never shown empty.
   A token that may not read the document at all (no read permission, or a condition this document fails) gets a
   conflict with `readable: false` and no `current`, `current_rows` or version. A ws_undo conflict shows the fields in
-  `changed_since` and lists the other readable fields in `omitted`.
+  `changed_since` and lists the other readable fields in `omitted`. Write replies follow the same rule: such a token gets
+  no document content (`return: "full"`, dry-run diffs, bulk previews, ws_delete's `recreate`), only `readable: false`
+  and the write's facts (ids, versions, `changed`); ws_replace skips such documents (`not_readable`). ws_bulk and ws_replace
+  select only documents the token can read: a token without read permission on the type is refused, and the token's
+  read conditions are added to the filter, so counts and jobs never include a document it cannot read.
 - `row_not_found`: the row a key names is gone. Lists the current keys.
 - `stale_row_key` (1.0 hardening item 16b): the row a key names is there, but the key no longer matches it: someone
   edited that row since it was read, the key comes from another database (an import, a restore, a copy to staging) or

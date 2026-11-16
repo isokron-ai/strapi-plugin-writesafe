@@ -260,6 +260,8 @@ B.registerAction('replace', {
   },
   async apply(strapi, ctx, job, documentId, raw, version, preview, chunk = {}) {
     const pc = E.permissionChecker(strapi, ctx, job.uid);
+    // searching is reading: a document the token cannot read is not searched or changed (E.cannotReadDoc)
+    if (E.cannotReadDoc(pc, raw)) return { documentId, status: 'skipped', reason: 'not_readable', version };
     const visible = { ...M.normalize(strapi, job.uid, await pc.sanitizeOutput(raw)), documentId: raw.documentId, locale: raw.locale };
     const replacer = chunkReplacer(chunk, job.spec);
     const r = compute(strapi, job.uid, visible, resolveTargets(strapi, job.uid, job.spec.fields), replacer, 0, raw);
@@ -325,6 +327,10 @@ async function describe(strapi, ctx, a, cfg) {
         populate: M.populateFor(strapi, a.uid), limit: batch.length,
       });
       for (const raw of docs) {
+        // searching is reading: a document the token cannot read is neither searched nor sampled (E.cannotReadDoc). The
+        // selection already has the read conditions (B.match); this per-document check stays as a second line, and is
+        // not counted anywhere in the reply.
+        if (E.cannotReadDoc(pc, raw)) continue;
         const visible = { ...M.normalize(strapi, a.uid, await pc.sanitizeOutput(raw)), documentId: raw.documentId, locale: raw.locale };
         const r = compute(strapi, a.uid, visible, targets, replacer, Math.max(0, rcfg.samples - samples.length), raw);
         if (!r.count) continue;

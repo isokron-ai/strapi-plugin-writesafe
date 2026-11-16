@@ -172,6 +172,15 @@ function staleRetry(code, message) {
 const versionOfRaw = (strapi, uid, raw) => M.versionOf(strapi, uid, raw);
 
 /**
+ * May this token read this document (as ws_get checks it)? sanitizeOutput filters fields only: with no read rule for the
+ * type, or a conditional read rule the document fails, Strapi's sanitizer removes nothing. Every reply that shows
+ * document content checks this first; a token that may write but not read gets the write's facts (ids, versions, the
+ * paths it changed) and no content.
+ */
+const cannotReadDoc = (pc, raw) => pc.cannot.read() || (raw != null && pc.cannot.read(raw));
+const NOT_READABLE = 'This token cannot read the document, so the reply shows no document content.';
+
+/**
  * Conflict payload. `current` is the whole document as ws_get shows it to this token (filtered through its read
  * permissions, sanitizeOutput), never only the fields the refused write touched: the conflict is about the document's
  * version, so another writer's change to any field is part of the state `current_version` stands for (MWS-CONC-6: the
@@ -189,11 +198,11 @@ const versionOfRaw = (strapi, uid, raw) => M.versionOf(strapi, uid, raw);
 async function conflict(strapi, pc, uid, raw, expected, extra = {}, kind = 'patch', only = null) {
   const at = { documentId: raw.documentId, locale: raw.locale || null };
   const message = extra.message || 'The document changed after you read it. Nothing was written.';
-  if (pc.cannot.read() || pc.cannot.read(raw)) {
-    // nothing that depends on the content: no state, no version, no comparison result (fields_changed)
-    const { retry, fields_changed, current_version, current, current_rows, omitted, ...rest } = extra; // eslint-disable-line no-unused-vars
+  if (cannotReadDoc(pc, raw)) {
+    // nothing that depends on the content: an allowlist of the caller's own facts (no state, version or comparison)
+    const kept = Object.fromEntries(['detected_by'].filter((k) => k in extra).map((k) => [k, extra[k]]));
     return new WsError({
-      code: 'version_conflict', ...at, expected_version: expected, ...rest,
+      code: 'version_conflict', ...at, expected_version: expected, ...kept,
       message: `${message} This token cannot read this document, so its current content and version are not shown.`,
       readable: false,
       retry: { hint: UNREADABLE_HINT },
@@ -1077,6 +1086,11 @@ async function applyPatch(strapi, ctx, a) {
     receipt.published = false;
     receipt.publish_skipped = pub;
   }
+  if ((a.dry_run || a.return === 'full') && (cannotReadDoc(pc, raw) || cannotReadDoc(pc, updatedRaw))) {
+    receipt.readable = false;
+    receipt.note = NOT_READABLE;
+    return receipt;
+  }
   if (a.dry_run) {
     // 1.0 stretch (c): what the write would change, field by field (the token's view; rows matched by key)
     const view = async (r) => M.presentDoc(strapi, uid, await pc.sanitizeOutput(r), undefined, { documentId, locale: raw.locale || null, full: r }).data;
@@ -1759,7 +1773,8 @@ function batchAbortView(e, items, dryRun) {
 async function liveDiff(strapi, pc, uid, documentId, locale, draftRaw, fields) {
   if (!hasDP(strapi, uid)) return { exists: null, diff: null, note: `${uid} has no draft & publish` };
   const live = await strapi.documents(uid).findOne({ documentId, ...(locale ? { locale } : {}), status: 'published', populate: M.populateFor(strapi, uid) });
-  // sanitizeOutput filters fields, not the entity's conditions: check the live version itself is readable (review)
+  // sanitizeOutput filters fields, not the entity's conditions: check the draft and the live version are readable (review)
+  if (cannotReadDoc(pc, draftRaw)) return { exists: Boolean(live), diff: null, note: 'the draft is not readable with this token' };
   if (live && pc.cannot.read(live)) return { exists: true, diff: null, note: 'the published version is not readable with this token' };
   const at = { documentId, locale: draftRaw.locale || null };
   // keys from the full rows, as a write computes them (phase 2 A review, finding 8)
@@ -1796,6 +1811,7 @@ async function getDoc(strapi, ctx, a) {
 }
 
 module.exports = {
+  cannotReadDoc, NOT_READABLE,
   retryDelay, MAX_ATTEMPTS, retryDecision, RETRY_BUDGET_MS, prelockTargets,
   // [bulk stream] also used by server/modules/{bulk,create,delete,replace,copy}
   isLocalized, isSingle, checkRefs, checkRefValue, checkComponentData, requestHash, RECEIPT_UID, DryRun,

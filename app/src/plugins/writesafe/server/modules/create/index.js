@@ -230,7 +230,10 @@ async function applyCreate(strapi, ctx, a) {
   }
   const gen = Object.keys(generated);
   if (gen.length) r.generated = Object.fromEntries(gen.map((f) => [f, created[f]]));
-  if (a.return === 'full') r.document = M.presentDoc(strapi, uid, await pc.sanitizeOutput(createdRaw), undefined, { full: createdRaw }).data;
+  if (a.return === 'full') {
+    // a token that may create but not read gets the create's facts only (E.cannotReadDoc)
+    if (E.cannotReadDoc(pc, createdRaw)) { r.readable = false; r.note = E.NOT_READABLE; } else r.document = M.presentDoc(strapi, uid, await pc.sanitizeOutput(createdRaw), undefined, { full: createdRaw }).data;
+  }
   return r;
 }
 

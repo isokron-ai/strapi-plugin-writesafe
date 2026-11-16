@@ -127,3 +127,18 @@ test('ws_undo conflict: only the fields changed since the receipt, the other rea
   assert.ok(!JSON.stringify(p).includes('ACME-7731'));
   assert.deepStrictEqual(p.changed_since, ['summary']);
 });
+
+test('read permission: the unreadable conflict keeps only an allowlist of extra members (message, detected_by)', async () => {
+  const { strapi, pc } = pageStrapi(NOW);
+  pc.cannot.read = () => true; // no read rule: sanitizeOutput returns everything
+  pc.sanitizeOutput = async (d) => ({ ...d });
+  const extra = { message: 'A field named in if_match changed after you read it. Nothing was written.', detected_by: 'strapi_base_version',
+    fields_changed: ['summary'], retry: { hint: 'h', expected_version: 'v3.x' }, current_version: 'v3.x', some_future_member: NOW.summary };
+  const e = (await E.conflict(strapi, pc, PAGE, NOW, 'v3.stale', extra)).payload;
+  assert.strictEqual(e.readable, false);
+  assert.strictEqual(e.detected_by, 'strapi_base_version');
+  assert.match(e.message, /^A field named in if_match changed after you read it\. Nothing was written\. This token cannot read/);
+  for (const k of ['fields_changed', 'current_version', 'some_future_member', 'current', 'current_rows', 'omitted']) assert.ok(!(k in e), `no ${k}`);
+  assert.ok(!('expected_version' in e.retry));
+  assert.ok(!JSON.stringify(e).includes('Rain date'));
+});

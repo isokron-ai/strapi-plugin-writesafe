@@ -81,13 +81,17 @@ async function applyDelete(strapi, ctx, a) {
     if (expected !== undefined && !M.versionMatches(strapi, uid, expected, raw)) {
       throw await E.conflict(strapi, pc, uid, raw, expected, { message: `The document${l ? ` (${l})` : ''} changed after you read it. Nothing was deleted.` }, 'delete');
     }
+    // a token that may delete but not read gets no content in the REPLY (E.cannotReadDoc): no recreate data. The module
+    // hooks still get the token's view, as before: history keeps the recreate image server-side, so a reader can undo
+    // the delete (ws_undo is not limited to the receipt's token).
+    const readable = !E.cannotReadDoc(pc, raw);
     const visible = await pc.sanitizeOutput(raw);
-    const hidden = U.hiddenKeys(doc, M.normalize(strapi, uid, visible)).filter((k) => !M.SKIP_KEYS.has(k));
+    const hidden = readable ? U.hiddenKeys(doc, M.normalize(strapi, uid, visible)).filter((k) => !M.SKIP_KEYS.has(k)) : [];
     const published = E.hasDP(strapi, uid)
       ? Boolean(await strapi.db.query(uid).findOne({ select: ['id'], where: { documentId, ...(l ? { locale: l } : {}), publishedAt: { $notNull: true } } }))
       : null;
     // Relations and media are kept as references (documentIds, file ids): ws_create takes them back.
-    before.push({ locale: l || null, version: M.versionOf(strapi, uid, raw), published, data: U.freshDocData(strapi, uid, M.normalize(strapi, uid, visible)), hidden, doc, view: M.normalize(strapi, uid, visible) });
+    before.push({ locale: l || null, version: M.versionOf(strapi, uid, raw), published, readable, data: readable ? U.freshDocData(strapi, uid, M.normalize(strapi, uid, visible)) : null, hidden, doc, view: M.normalize(strapi, uid, visible) });
   }
 
   // A dry run never calls Strapi's delete (phase 2 item 10, N7): its middlewares and lifecycle hooks would run. Everything
@@ -112,8 +116,10 @@ async function applyDelete(strapi, ctx, a) {
     locales: localized ? locales : undefined,
     previous_version: a.all_locales ? Object.fromEntries(before.map((b) => [b.locale, b.version])) : before[0].version,
     was_published: a.all_locales ? Object.fromEntries(before.map((b) => [b.locale, b.published])) : before[0].published,
-    recreate: before.map((b) => ({ tool: 'ws_create', args: { uid, ...(b.locale ? { locale: b.locale } : {}), data: b.data } })),
+    recreate: before.filter((b) => b.readable).map((b) => ({ tool: 'ws_create', args: { uid, ...(b.locale ? { locale: b.locale } : {}), data: b.data } })),
   };
+  if (before.some((b) => !b.readable)) { r.readable = false; r.note = E.NOT_READABLE; }
+  if (!r.recreate.length) delete r.recreate;
   if (!localized) delete r.locales;
   if (moduleData) r.modules = moduleData;
   const missing = before.flatMap((b) => b.hidden.map((f) => (b.locale ? `${b.locale}:${f}` : f)));

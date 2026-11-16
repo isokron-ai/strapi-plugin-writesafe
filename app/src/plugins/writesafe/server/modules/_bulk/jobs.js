@@ -114,7 +114,10 @@ registerAction('patch', {
     const item = { documentId, status: 'ok', version: r.version };
     if (r.rows) item.rows = r.rows;
     publishItem(item, job.spec, r, preview);
-    if (preview) {
+    if (preview && E.cannotReadDoc(E.permissionChecker(strapi, ctx, job.uid), raw)) {
+      item.changed = r.changed;
+      item.readable = false; // a token that may write but not read: no before/after values (E.cannotReadDoc)
+    } else if (preview) {
       const pc = E.permissionChecker(strapi, ctx, job.uid);
       const fields = r.changed;
       const before = M.presentDoc(strapi, job.uid, await pc.sanitizeOutput(raw), fields, { full: raw }).data;
@@ -153,13 +156,17 @@ async function match(strapi, ctx, uid, locale, filters, action, limit) {
   const pc = E.permissionChecker(strapi, ctx, uid);
   const perm = actions[action].permission;
   if (pc.cannot[perm]()) throw new WsError({ code: 'forbidden', message: `This token cannot ${perm} ${uid}.` });
+  // Selecting by a filter is reading: a token without read permission on the type is refused, and the read conditions
+  // are added as well as the action's, so counts and selections only consider documents the token can read (the read
+  // sanitizer and validateQuery do not narrow anything for a token without a read rule, or with a conditional one).
+  if (pc.cannot.read()) throw new WsError({ code: 'forbidden', message: `This token cannot read ${uid}, so it cannot select documents by a filter.` });
   // The filter is checked against READ permission (a filter on a field the token cannot read is refused) and must come
   // through the read sanitizer unchanged; it is NOT passed through the update/publish sanitizer, which silently deletes
   // filter keys on fields the token may read but not write and so widened a job to every document (review finding).
   // The action's permission conditions are added separately. One check for ws_bulk, ws_replace and ws_find
   // (../_lib/filters.js).
   const checked = await FL.checkFilters(pc, filters, { after: 'Nothing was written.' });
-  const qfilters = await FL.withConditions(pc, perm, checked);
+  const qfilters = await FL.withConditions(pc, 'read', await FL.withConditions(pc, perm, checked));
   const scope = { ...(locale ? { locale } : {}), ...(E.hasDP(strapi, uid) ? { status: 'draft' } : {}) };
   const count = await strapi.documents(uid).count({ filters: qfilters, ...scope });
   if (count > limit) return { count, ids: null, qfilters };

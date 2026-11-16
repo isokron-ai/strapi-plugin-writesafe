@@ -39,6 +39,13 @@ the Upgrading notes below are complete.
   (`requires_reread`; the document may not have changed): read again; agents get these until every node runs this
   version. New table `writesafe_content_rev`. Needs `documentServiceLock` (with it off,
   the revision is 0 and tokens are content-only as before).
+- **(contract) Read permission in write replies:** write replies no longer include document content the token cannot
+  read. For a token that may write a document but not read it, `return: "full"`, a dry run's `diff`, ws_publish's
+  dry-run diff, ws_bulk preview values and ws_delete's `recreate` data are left out; the reply has `readable: false` and
+  the write's facts (ids, versions, `changed`). ws_replace does not search such a document (job item `skipped`, reason
+  `not_readable`). Filters and match counts only consider documents the token can read: ws_bulk and ws_replace refuse a
+  token without read permission on the type (`forbidden`) and add the token's read conditions to the selection, so a
+  count, a scan total or a job's documents never include a document the token cannot read.
 - **Stale admin forms** (bench X4): an admin-panel Save whose form was loaded before an agent's write no longer writes
   the form's old values over it behind a 200. New option `staleFormGuard` (default on; needs `documentServiceLock`;
   new `retention.journalHours`, 72). **Behaviour change for sites that use the admin together with REST or GraphQL:**

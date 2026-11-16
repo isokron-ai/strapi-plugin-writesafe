@@ -213,7 +213,11 @@ async function applyLocalize(strapi, ctx, E, a) {
   if (untranslated.length) receipt.untranslated = untranslated.slice(0, 50);
   if (Object.keys(b.rows).length) receipt.rows = b.rows;
   if (b.unmapped.length) receipt.unmapped_relations = b.unmapped;
-  if (a.dry_run || a.return === 'full') {
+  const targetUnreadable = (p.tgtRaw && E.cannotReadDoc(p.pc, p.tgtRaw)) || (written && E.cannotReadDoc(p.pc, written.raw));
+  if ((a.dry_run || a.return === 'full') && targetUnreadable) {
+    receipt.readable = false;
+    receipt.note = E.NOT_READABLE;
+  } else if (a.dry_run || a.return === 'full') {
     const view = async (raw) => (raw ? M.presentDoc(strapi, p.uid, await p.pc.sanitizeOutput(raw), undefined, { full: raw }).data : null);
     const after = written ? await view(written.raw) : await view(p.tgtRaw);
     if (a.dry_run) receipt.diff = diffViews(await view(p.tgtRaw), after);
