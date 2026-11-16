@@ -81,7 +81,9 @@ jobs:
     name: Strapi ${{ matrix.strapi }}
     needs: unit
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    # three databases in one job: 35 to 64 min on a usual runner (16 Nov 2026, 1743/1738 checks per database); a slow
+    # runner took ~40% longer on every database alike (5.55.1: SQLite 22, Postgres 27, MySQL 24+ min) and hit 75
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       max-parallel: 16
