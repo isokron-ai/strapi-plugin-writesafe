@@ -1,6 +1,6 @@
 {
   "name": "strapi-plugin-writesafe-mcp",
-  "version": "1.0.0-rc.2",
+  "version": "1.0.0",
   "description": "Write-safe MCP tools for Strapi 5's built-in MCP server: version-checked patches, row-level dynamic-zone/component/blocks edits, all-or-nothing batches, idempotency keys, dry runs and structured conflicts; optional modules for bulk jobs, create/delete, find and replace, translation, history and undo, and media import.",
   "keywords": [
     "strapi",

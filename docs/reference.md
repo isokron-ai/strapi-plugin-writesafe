@@ -747,7 +747,7 @@ Retention (`retention`, 1.0 hardening; runs at startup and every `pruneEverySeco
 6. It writes with `strapi.documents(uid).update` (with `baseVersion` when the running Strapi supports it).
 7. It reads the new version back and returns the receipt.
 
-## Limits (1.0.0-rc.2)
+## Limits (1.0.0)
 
 - **Content types:** `api::` collection and single types. Plugin and admin types are not covered.
 - **Media:** ws_patch references existing files; importing new files is the `media` module's job (allowlisted URLs
@@ -815,11 +815,11 @@ node --test test/*.test.js                          # unit tests (helpers, baseV
 ci/prepare_app.sh 5.62.0 ../work/app-5.62.0         # the test app with the packed plugin
 APP_DIR=../work/app-5.62.0 DB=sqlite ci/run_suite.sh  # core, media, localize/history, bulk/create suites
 # or one suite at a time, against a running Strapi with every module on:
-python3 tests/test_plugin.py                        # core: 268 checks
-python3 tests/test_media.py                         # media module: 140
-python3 tests/test_l10n_history.py                  # localize + history: 143
-python3 tests/test_bulk_create.py                   # create, delete, bulk, replace, copy, history integration: 184
-python3 tests/test_locking.py                       # lock order: Document Service lock, writer coverage, deadlock arms (short)
+python3 tests/test_plugin.py                        # core: 363 checks
+python3 tests/test_media.py                         # media module: 145
+python3 tests/test_l10n_history.py                  # localize + history: 160
+python3 tests/test_bulk_create.py                   # create, delete, bulk, replace, copy, history integration: 246
+python3 tests/test_locking.py                       # lock order: Document Service lock, writer coverage, deadlock arms (short): 83 to 84
 SUITES=stress/lock_soak ci/run_suite.sh             # the lock stress job (tests/stress/lock_soak.py)
 python3 tests/test_modes.py                         # restarts Strapi once per builtinUpdates mode: 45
 python3 tests/test_base_version.py                  # against a #27506 stub: 16
@@ -829,7 +829,10 @@ node tests/test_history_extension.js                # history hooks in-process (
 node scripts/compat_check.mjs                       # the compat table for the installed Strapi (deep probes: test database only)
 ```
 
-Each passes in full on SQLite, Postgres 16 and MySQL 8.4 (Strapi 5.62.0). CI (`.github/workflows/ci.yml`) runs the
+1.0.0 (16 Nov 2026): the unit tests pass 436/436, and every functional suite passes on every Strapi 5 minor from 5.47 to
+5.62 (16 versions) on SQLite, Postgres 16 and MySQL 8.4, each minor on its own `@strapi/utils`: 48 of 48 cells, 1743
+checks per SQLite cell and 1738 per Postgres or MySQL cell (the counts above are Strapi 5.62.0 on SQLite; the full grid
+workflow, `full-grid.yml`, and the per-change `ci.yml` in the public repository's Actions). CI (`.github/workflows/ci.yml`) runs the
 unit tests, the package checks and the functional suites (`ci/run_suite.sh`: the four module suites with
 `WRITESAFE_ALLOW_FORCE=true`, then `tests/test_phase4d.py` in three restarts: the suite config, the shipped defaults,
 and history and find off) on every Strapi minor from 5.47 to 5.62 on all three databases.

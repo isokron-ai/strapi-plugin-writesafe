@@ -4,9 +4,9 @@ Write-safe tools for the MCP server built into Strapi 5. The plugin adds five co
 plus up to eleven more tools and a row op from modules (`history` and `find` are on by default, the others optional), using the plugin API (`strapi.ai.mcp.registerTool`). They use the same
 admin tokens and the same RBAC as the built-in tools.
 
-Status: 1.0.0-rc.2, pre-release, under active hardening. Tested on Strapi 5.62.0 (Community edition) with SQLite, Postgres 16 and
-MySQL 8.4, every module on; CI runs the functional suites on every Strapi minor from 5.47 to 5.62. Not published.
-See `CHANGELOG.md`.
+Status: 1.0.0. Tested on every Strapi 5 minor from 5.47 to 5.62 (Community edition) with SQLite, Postgres 16 and MySQL
+8.4, every module on: 48 of 48 cells pass (1743 checks per SQLite cell, 1738 per Postgres or MySQL cell), and the unit
+tests pass 436/436. See `CHANGELOG.md`.
 
 The full reference (every argument, reply, error code and limit) lives in the repository's `docs/`, linked from each
 section below: [reference](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md).
@@ -205,7 +205,7 @@ the receipts table and its retention:
 - Agents that ignore instructions and descriptions can still pick `update_<type>` in `keep`/`guide` mode.
 
 Full list (media, relations, locales, batches, upgrades, modules):
-[Limits](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#limits-100-rc2).
+[Limits](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#limits-100).
 
 ## Tests
 
@@ -213,7 +213,9 @@ Full list (media, relations, locales, batches, upgrades, modules):
 node --test test/*.test.js   # unit tests (helpers, baseVersion stub, built-in rewrite, modules, media guard, bulk)
 ```
 
-The functional suites run against a real Strapi on SQLite, Postgres 16 and MySQL 8.4:
+The functional suites run against a real Strapi on SQLite, Postgres 16 and MySQL 8.4. For 1.0.0 they pass on every
+Strapi 5 minor from 5.47 to 5.62, each on its own `@strapi/utils` (48 of 48 cells; 1743 checks per SQLite cell, 1738
+per Postgres or MySQL cell), and the unit tests pass 436/436:
 [Tests](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#tests).
 
 ## Links

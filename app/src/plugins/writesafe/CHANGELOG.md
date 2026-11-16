@@ -5,7 +5,20 @@ and rc.1) are in
 [docs/CHANGELOG-1.0-details.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/CHANGELOG-1.0-details.md);
 the Upgrading notes below are complete.
 
-## Unreleased (1.0 hardening)
+## 1.0.0 (16 Nov 2026)
+
+The first stable release. Highlights (details below; every hardening stream in docs/CHANGELOG-1.0-details.md):
+- **(contract)** Strict argument types by default (`lenientArgs: false`): a string where a boolean, number, object or
+  array is declared is refused before the tool runs.
+- **Stale admin forms** (`staleFormGuard`, default on): an admin Save from a form loaded before an agent's write is
+  merged or refused (409), never written over the agent's change behind a 200.
+- **(contract)** A `version_conflict` carries the whole current document (as the token may read it) and its version.
+- **Read permission everywhere a reply shows content:** conflict replies, write replies, filters, match counts, sort,
+  and per-document read fields, including read rules with conditions and field lists; ws_undo of a delete keeps the
+  original creator and needs the stored content to be readable on the original document.
+- **Strapi 5.47 to 5.52.1** (zod 3.25 `@strapi/utils`): tool schemas are built once per registration (no memory growth
+  per MCP session), and argument descriptions reach tools/list; the CI matrix runs each Strapi minor on its own
+  `@strapi/utils`.
 
 ### Summary
 - **MWS self-test fixes** (D1, D3, D4, D5 of the self-test against MWS 0.9):
@@ -130,6 +143,12 @@ the Upgrading notes below are complete.
   publish, delete and localize conflicts carry no version; `builtinUpdates` defaults to `guard`; publish items need
   `expected_version`; a bare `updatedAt` is refused; idempotency keys are scoped by the resolved target. Tokens with
   permission conditions (Strapi's Author role) work on their own entries; receipts have a retention.
+
+### Known limitations
+- ws_undo of a delete checks the stored content against the token's read rules on the original document, rebuilt
+  with its original creator (`createdBy`) but not the creator's roles. A read rule that depends on the creator's role
+  ("same role as creator") can never pass there, so a token that reads only through such a rule cannot undo deletes
+  (refused, `forbidden`). A token whose read rules do not depend on the creator's role is not affected.
 
 ### Upgrading
 

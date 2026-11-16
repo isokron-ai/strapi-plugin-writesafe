@@ -17,7 +17,7 @@
 
 /**
  * Strapi versions each internal was tested on (exact versions; every functional suite, every module on, on SQLite,
- * Postgres 16 and MySQL 8.4): the CI matrix (ci/strapi-versions.json), 1.0.0-rc.2.
+ * Postgres 16 and MySQL 8.4): the CI matrix (ci/strapi-versions.json), 1.0.0.
  */
 const TESTED = ['5.47.1', '5.48.1', '5.49.0', '5.50.2', '5.51.2', '5.52.3', '5.53.0', '5.54.0', '5.55.1', '5.56.0', '5.57.0', '5.58.0', '5.59.0', '5.60.0', '5.61.1', '5.62.0'];
 
