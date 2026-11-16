@@ -18,10 +18,12 @@ VERSIONS=("$@")
 mkdir -p "$WORK_ROOT"
 for V in "${VERSIONS[@]}"; do
   APP="$WORK_ROOT/app-$V"
-  if [ ! -f "$APP/.strapi-version" ]; then
+  # #42: a work dir prepared before the utils pin has no .plugin-deps (and the hoisted utils): prepare it again
+  if [ ! -f "$APP/.strapi-version" ] || [ ! -f "$APP/.plugin-deps" ]; then
     "$ROOT/ci/prepare_app.sh" "$V" "$APP" > "$WORK_ROOT/prepare-$V.log" 2>&1 || { printf '%s\tall\tPREPARE_FAILED\n' "$V" | tee -a "$WORK_ROOT/matrix.tsv"; continue; }
   fi
   RV=$(cat "$APP/.strapi-version")
+  DEPS=$(cat "$APP/.plugin-deps")   # #42
   for DB in $DBS; do
     case "$DB" in
       postgres)
@@ -39,6 +41,6 @@ for V in "${VERSIONS[@]}"; do
       "$ROOT/ci/run_suite.sh" > "$WORK_ROOT/run-$RV-$DB.txt" 2>&1
     RC=$?
     SUM=$(grep -E 'passed, [0-9]+ failed' "$WORK_ROOT/run-$RV-$DB.txt" | tail -1)
-    printf '%s\t%s\t%s\t%s\n' "$RV" "$DB" "rc=$RC" "${SUM:-no summary}" | tee -a "$WORK_ROOT/matrix.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$RV" "$DB" "$DEPS" "rc=$RC" "${SUM:-no summary}" | tee -a "$WORK_ROOT/matrix.tsv"
   done
 done

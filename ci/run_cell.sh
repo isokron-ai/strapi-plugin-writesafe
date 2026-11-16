@@ -8,6 +8,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 APP=$(cd "${1:?app dir}" && pwd)
 RES=${2:?results dir}; mkdir -p "$RES"; RES=$(cd "$RES" && pwd)
 VER=$(cat "$APP/.strapi-version")
+# #42: which @strapi/utils (and zod) the plugin runs on, on every result line
+DEPS=$(cat "$APP/.plugin-deps" 2>/dev/null || echo "plugin deps unknown")
+echo "strapi $VER: plugin on $DEPS"
 # CI: the service containers' throwaway passwords derive from the run id, so they need not sit in the step env (and log)
 if [ -n "${GITHUB_RUN_ID:-}" ]; then
   PG_PASSWORD=${PG_PASSWORD:-ci-$GITHUB_RUN_ID-${GITHUB_RUN_ATTEMPT:-1}-pg}
@@ -26,7 +29,7 @@ for DB in ${DBS:-sqlite postgres mysql}; do
   echo "::endgroup::"
   SUM=$(grep -E 'passed, [0-9]+ failed' "$RES/$VER-$DB.txt" | tail -1)
   echo "rc=$RC ${SUM:-no summary}" > "$RES/$VER-$DB.status"
-  echo "strapi $VER $DB: rc=$RC ${SUM:-no summary}"
+  echo "strapi $VER $DB ($DEPS): rc=$RC ${SUM:-no summary}"
   [ "$RC" -ne 0 ] && FAILED=1 && echo "::error title=strapi $VER on $DB::rc=$RC ${SUM:-no summary}"
   rm -rf "$RES/work-$DB/secrets"   # generated credentials never leave the runner
 done

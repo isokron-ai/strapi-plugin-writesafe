@@ -8,6 +8,7 @@ const R = require('./reply');
 const G = require('./guidance');
 const F = require('./force');
 const INT = require('./compat/internals');
+const META = require('./compat/schema-meta');
 
 /**
  * Argument types (config.lenientArgs; MWS-IN-6). Strict by default since the MWS self-test (D4): a string sent where
@@ -129,6 +130,38 @@ const patchShape = (strapi) => ({
   ...F.arg(z, L, 'Allow set and unset without expected_version (last write wins).'), // only with config.allowForce
 });
 
+/**
+ * Input and output schemas are built once per registration (#41). Strapi's MCP service calls a tool's
+ * resolveInputSchema every time it binds the registered tools to an SDK server (every MCP session), and zod 3.25's
+ * `zod/v4` build (the `z` of @strapi/utils 5.47.0 to 5.52.1) keeps `.describe()` metadata in a strong Map: each fresh
+ * set of described schemas stayed in memory until Strapi ran out of heap.
+ *
+ * Resolvers must be context-free: they are called without the session's context, so no schema can carry one token's
+ * or request's data to another. What they read is fixed by register() (the plugin config, F.ALLOWED, the enabled
+ * modules, the argument mode, which is read when a value is parsed) except the covered content types (uid enums;
+ * localized ones for ws_localize), which are read live. So each register() starts its own cache (a config change takes
+ * effect through register(), as before), and the key inside it is the tool, input or output, and the content types.
+ */
+let schemaBuilds = 0;
+const contentTypesKey = (strapi) => JSON.stringify(E.writableUids(strapi).map((uid) => {
+  const ct = strapi.contentTypes[uid];
+  return `${uid}|${ct.kind}|${ct.pluginOptions && ct.pluginOptions.i18n && ct.pluginOptions.i18n.localized === true ? 'i18n' : ''}`;
+}));
+const memoSchema = (cache, strapi, name, which, build) => {
+  if (typeof build !== 'function') return build;
+  const make = () => {
+    schemaBuilds += 1;
+    // descriptions also in the MCP SDK's zod registry when it is another copy (compat/schema-meta.js)
+    return META.copyMeta(build());
+  };
+  return () => {
+    let key;
+    try { key = `${name}\u0000${which}\u0000${contentTypesKey(strapi)}`; } catch { return make(); } // never break tools/list
+    if (!cache.has(key)) cache.set(key, make());
+    return cache.get(key);
+  };
+};
+
 /** What module tools get (server/modules/index.js): the engine, result helpers and schema helpers. */
 const apiFor = (strapi) => ({
   engine: E, model: require('./model'), WsError: E.WsError, z, lenient: L,
@@ -150,9 +183,13 @@ function register(strapi) {
   // Every handler of the plugin runs as its caller (E.withCaller), so reads load what the caller's permission
   // conditions reference (phase 1 review, 10a).
   let registeredCount = 0;
+  const schemaCache = new Map(); // #41: this registration's schemas (memoSchema)
   const mcp = {
     registerTool: (def) => (registeredCount += 1) && strapi.ai.mcp.registerTool({
       ...def,
+      // built once per registration and content-type set, not on every MCP session (#41)
+      resolveInputSchema: memoSchema(schemaCache, strapi, def.name, 'input', def.resolveInputSchema),
+      resolveOutputSchema: memoSchema(schemaCache, strapi, def.name, 'output', def.resolveOutputSchema),
       createHandler: (s, context) => {
         INT.noteContext(context); // compat row mcp.handler_context, once
         const inner = def.createHandler(s, context);
@@ -283,4 +320,6 @@ module.exports = {
   register, apiFor, asInt, refuseString, refusePosition, WANT, L, position,
   /** tests only: switch the argument mode as register() does from config.lenientArgs */
   _setLenient: (on) => { LENIENT = on === true; },
+  /** tests only: how many schemas were built (#41: a repeated resolve with the same key builds none) */
+  _schemaBuilds: () => schemaBuilds,
 };

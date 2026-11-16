@@ -46,6 +46,11 @@ the Upgrading notes below are complete.
   `not_readable`). Filters and match counts only consider documents the token can read: ws_bulk and ws_replace refuse a
   token without read permission on the type (`forbidden`) and add the token's read conditions to the selection, so a
   count, a scan total or a job's documents never include a document the token cannot read.
+- **Memory and tools/list on Strapi 5.47 to 5.52.1** (zod 3.25 `@strapi/utils`): tool input and output schemas are
+  built once per registration instead of on every MCP session; on those minors zod 3.25 kept every rebuilt schema's
+  descriptions, and the heap grew until Strapi stopped. Argument descriptions also reach tools/list there (the MCP SDK
+  converted the schemas with another zod copy and lost every description). The CI matrix now runs each Strapi minor on
+  its own `@strapi/utils`.
 - **Stale admin forms** (bench X4): an admin-panel Save whose form was loaded before an agent's write no longer writes
   the form's old values over it behind a 200. New option `staleFormGuard` (default on; needs `documentServiceLock`;
   new `retention.journalHours`, 72). **Behaviour change for sites that use the admin together with REST or GraphQL:**

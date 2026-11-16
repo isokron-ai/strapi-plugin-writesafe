@@ -38,6 +38,10 @@ const [out, ver, tgz] = process.argv.slice(2);
 const pj = path.join(out, 'package.json');
 const p = JSON.parse(fs.readFileSync(pj, 'utf8'));
 for (const k of Object.keys(p.dependencies)) if (k.startsWith('@strapi/')) p.dependencies[k] = ver;
+// #42: the plugin's @strapi/utils peer (>=5.47.0 <6) is not an app dependency, so npm hoisted the newest release to the
+// top of node_modules and the plugin ran on it (5.62.0, zod 4.4.3) in every cell. Pinned like the other @strapi/*
+// packages, the plugin loads the cell's own utils and the zod that version ships (zod 3.25 up to 5.52.1).
+p.dependencies['@strapi/utils'] = ver;
 p.dependencies['strapi-plugin-writesafe-mcp'] = 'file:vendor/' + tgz;
 // a CI copy must not phone home or carry the dev machine's install ids
 p.strapi = { telemetryDisabled: true };
@@ -58,5 +62,17 @@ npm install --no-audit --no-fund --loglevel=error $PEER ${BEFORE:+--before="$BEF
 cp package-lock.json resolved-package-lock.json
 INSTALLED=$(node -p 'require("@strapi/strapi/package.json").version')
 [ "$INSTALLED" = "$RESOLVED" ] || { echo "installed @strapi/strapi $INSTALLED, expected $RESOLVED" >&2; exit 1; }
+# #42: the @strapi/utils the plugin itself resolves (from its own folder, as Strapi loads it), and the zod that utils
+# resolves. The prepare step fails unless the plugin's utils is the cell's version.
+DEPS_LINE=$(node -e '
+  const r = (id, from) => require.resolve(id, { paths: [from] });
+  const plugin = require("path").dirname(r("strapi-plugin-writesafe-mcp/package.json", process.cwd()));
+  const utilsPkg = r("@strapi/utils/package.json", plugin);
+  const zodPkg = r("zod/package.json", require("path").dirname(utilsPkg));
+  console.log(require(utilsPkg).version, require(zodPkg).version);') || { echo "could not resolve the plugin's @strapi/utils and zod (see above)" >&2; exit 1; }
+read -r PLUGIN_UTILS PLUGIN_ZOD <<< "$DEPS_LINE"
+echo "plugin resolves @strapi/utils $PLUGIN_UTILS (zod $PLUGIN_ZOD)"
+[ "$PLUGIN_UTILS" = "$RESOLVED" ] || { echo "the plugin resolves @strapi/utils $PLUGIN_UTILS, expected $RESOLVED" >&2; exit 1; }
 echo "$RESOLVED" > .strapi-version
-echo "prepared $OUT with @strapi/strapi $INSTALLED and $(node -p 'require("strapi-plugin-writesafe-mcp/package.json").version')"
+printf '@strapi/utils %s zod %s\n' "$PLUGIN_UTILS" "$PLUGIN_ZOD" > .plugin-deps
+echo "prepared $OUT with @strapi/strapi $INSTALLED, @strapi/utils $PLUGIN_UTILS (zod $PLUGIN_ZOD) and $(node -p 'require("strapi-plugin-writesafe-mcp/package.json").version')"
