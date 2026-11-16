@@ -17,6 +17,7 @@ const E = require('../../engine');
 const M = require('../../model');
 const U = require('../_bulk/util');
 const DB = require('../../compat/db');
+const idOf = (u) => (u && typeof u === 'object' ? u.id ?? null : u ?? null);
 
 const { WsError } = E;
 
@@ -91,7 +92,12 @@ async function applyDelete(strapi, ctx, a) {
       ? Boolean(await strapi.db.query(uid).findOne({ select: ['id'], where: { documentId, ...(l ? { locale: l } : {}), publishedAt: { $notNull: true } } }))
       : null;
     // Relations and media are kept as references (documentIds, file ids): ws_create takes them back.
-    before.push({ locale: l || null, version: M.versionOf(strapi, uid, raw), published, readable, data: readable ? U.freshDocData(strapi, uid, M.normalize(strapi, uid, visible)) : null, hidden, doc, view: M.normalize(strapi, uid, visible) });
+    // the history image: server-side, never in a reply; shown and restored through ws_undo's own read checks
+    const image = typeof pc.sanitizeOutputServerSide === 'function' ? await pc.sanitizeOutputServerSide(raw) : visible;
+    // the original creator and editor, kept with the history image: ws_undo restores them (a recreate must not make
+    // the page the undoer's own) and checks the image against the read rules as they apply to the original page
+    const creators = { createdBy: idOf(raw.createdBy), updatedBy: idOf(raw.updatedBy) };
+    before.push({ creators, locale: l || null, version: M.versionOf(strapi, uid, raw), published, readable, data: readable ? U.freshDocData(strapi, uid, M.normalize(strapi, uid, visible)) : null, hidden, doc, view: M.normalize(strapi, uid, image) });
   }
 
   // A dry run never calls Strapi's delete (phase 2 item 10, N7): its middlewares and lifecycle hooks would run. Everything
@@ -103,7 +109,7 @@ async function applyDelete(strapi, ctx, a) {
     for (const b of before) {
       const info = {
         tool: 'ws_delete', action: 'delete', uid, documentId, locale: b.locale, args: a, dryRun: Boolean(a.dry_run),
-        sanitize: (d) => pc.sanitizeOutput(d), raw: { before: b.doc, after: null },
+        sanitize: (d) => pc.sanitizeOutput(d), raw: { before: b.doc, after: null }, creators: b.creators,
         versions: { before: b.version, after: null }, // from the raw draft, as ws_get shows it (re-review N7)
       };
       const m = await E.MOD.afterWrite(ctx, info, b.view, null);

@@ -68,7 +68,7 @@ function summaryFields(strapi, E, pc, uid, named) {
 }
 
 /** "field" or "field:asc|desc", on a showable field the token may sort by, or updatedAt/createdAt. */
-async function sortOf(strapi, E, pc, uid, sort) {
+async function sortOf(strapi, E, pc, uid, sort, { ability, locale } = {}) {
   if (!sort) return ['id:asc'];
   const [field, dir = 'asc'] = sort.split(':');
   if (!SORT_SYSTEM.includes(field) && !showable(strapi, uid).includes(field)) {
@@ -83,6 +83,11 @@ async function sortOf(strapi, E, pc, uid, sort) {
   }
   const safe = await pc.sanitizeQuery({ sort: s });
   if (M.canonical(safe.sort ?? null) !== M.canonical(s)) throw new E.WsError({ code: 'invalid', message: `sort: this token may not sort by ${field}.` });
+  // the same field-level read rule as a filter (_lib/filters.js): the order of the rows would show a field's values on
+  // documents where the token may not read it
+  if (!SORT_SYSTEM.includes(field) && FL.unreadableFilterPaths(strapi, uid, ability, locale, [field]).length) {
+    throw new E.WsError({ code: 'invalid', message: `sort: ${field} may only be used by a token that can read it on every document it may read.` });
+  }
   return [s, 'id:asc']; // id breaks ties, so pages do not overlap
 }
 
@@ -93,8 +98,8 @@ async function find(strapi, E, ctx, a) {
   if (pc.cannot.read()) throw new E.WsError({ code: 'forbidden', message: `This token cannot read ${uid}.` });
   const locale = await E.resolveLocale(strapi, uid, a.locale);
   const fields = summaryFields(strapi, E, pc, uid, a.fields);
-  const sort = await sortOf(strapi, E, pc, uid, a.sort);
-  const filters = await FL.withConditions(pc, 'read', await FL.checkFilters(pc, a.filters));
+  const sort = await sortOf(strapi, E, pc, uid, a.sort, { ability: ctx && ctx.userAbility, locale });
+  const filters = await FL.withConditions(pc, 'read', await FL.checkFilters(pc, a.filters, { strapi, uid, ability: ctx && ctx.userAbility, locale }));
   const dp = E.hasDP(strapi, uid);
   const base = { filters, ...(locale ? { locale } : {}), ...(dp ? { status: 'draft' } : {}) };
   const limit = Math.min(Math.max(a.limit || DEFAULT_LIMIT, 1), MAX_LIMIT);

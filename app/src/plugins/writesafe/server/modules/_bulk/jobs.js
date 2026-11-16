@@ -165,7 +165,7 @@ async function match(strapi, ctx, uid, locale, filters, action, limit) {
   // filter keys on fields the token may read but not write and so widened a job to every document (review finding).
   // The action's permission conditions are added separately. One check for ws_bulk, ws_replace and ws_find
   // (../_lib/filters.js).
-  const checked = await FL.checkFilters(pc, filters, { after: 'Nothing was written.' });
+  const checked = await FL.checkFilters(pc, filters, { after: 'Nothing was written.', strapi, uid, ability: ctx && ctx.userAbility, locale });
   const qfilters = await FL.withConditions(pc, 'read', await FL.withConditions(pc, perm, checked));
   const scope = { ...(locale ? { locale } : {}), ...(E.hasDP(strapi, uid) ? { status: 'draft' } : {}) };
   const count = await strapi.documents(uid).count({ filters: qfilters, ...scope });
@@ -204,10 +204,17 @@ async function withVersions(strapi, uid, locale, ids) {
 }
 
 /** The documentIds of a chunk that still match the job's filter (one query, after the chunk's locks). */
-async function stillMatching(strapi, job, documentIds) {
-  if (!job.qfilters || !Object.keys(job.qfilters).length || !documentIds.length) return new Set(documentIds);
+async function stillMatching(strapi, job, documentIds, ctx) {
+  if (!documentIds.length) return new Set(documentIds);
+  // The token's read conditions are applied again on every chunk: a job planned before they were part of the stored
+  // filter (writesafe before 1.0) only touches documents the token can read now, and so does one whose token lost
+  // read access to some documents since.
+  const pc = E.permissionChecker(strapi, ctx, job.uid);
+  if (pc.cannot.read()) return new Set(); // lost read access: every document is skipped (no_longer_matches)
+  const qf = await FL.withConditions(pc, 'read', job.qfilters || {});
+  if (!qf || !Object.keys(qf).length) return new Set(documentIds);
   const hits = await strapi.documents(job.uid).findMany({
-    filters: { $and: [job.qfilters, { documentId: { $in: documentIds } }] }, ...(job.locale ? { locale: job.locale } : {}),
+    filters: { $and: [qf, { documentId: { $in: documentIds } }] }, ...(job.locale ? { locale: job.locale } : {}),
     ...(E.hasDP(strapi, job.uid) ? { status: 'draft' } : {}), fields: ['documentId'], limit: documentIds.length,
   });
   return new Set(hits.map((h) => h.documentId));
@@ -226,7 +233,7 @@ async function applyOne(strapi, ctx, job, row, preview, chunk, matching) {
     if (e instanceof WsError && e.payload.code === 'not_found') return { documentId, status: 'skipped', reason: 'deleted' };
     throw e;
   }
-  const still = matching || await stillMatching(strapi, job, [documentId]);
+  const still = matching || await stillMatching(strapi, job, [documentId], ctx);
   if (!still.has(documentId)) return { documentId, status: 'skipped', reason: 'no_longer_matches' };
   const act = actions[job.action];
   // The precondition is the version read now, under the row lock, inside this chunk's transaction ...
@@ -322,7 +329,7 @@ async function chunkTx(strapi, ctx, jobId, owner, fb, guard) {
   const upTo = fb.stopAt ? fb.stopAt.index : rows.length;
   const ids = rows.slice(0, upTo).map((r) => r.docId);
   await D.lockDocuments(strapi, jv.uid, ids, jv.locale);
-  const matching = await stillMatching(strapi, jv, ids);
+  const matching = await stillMatching(strapi, jv, ids, ctx);
   const sp = D.savepointOf(strapi);
   const chunk = {};
   const cap = cfg.chunkTimeMs;
@@ -1001,7 +1008,7 @@ function toolDef(strapi, h, cfg) {
 }
 
 module.exports = {
-  toolDef, registerAction, handle, jobArgs, match, applyOne, runChunk, chunkTx, reconcile, statusView, view, canary, previewPositions, specHash,
+  toolDef, registerAction, handle, jobArgs, match, stillMatching, applyOne, runChunk, chunkTx, reconcile, statusView, view, canary, previewPositions, specHash,
   actions, isEmptyFilter, startCheck, checkJob, parseCursor, compactError, stopRecord, unstopRecord, control,
   cancelJob, refuseMoved, jobSchema, MOVED, MOVED_KEYS, bulkSpec, publishItem, totalsOf, itemOut, storedInfo, ready, runJob,
   // [stream G] used by server/runner/adapter.js and server/approval/gate.js

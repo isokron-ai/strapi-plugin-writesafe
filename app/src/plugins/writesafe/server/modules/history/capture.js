@@ -82,7 +82,11 @@ function entryOf(info, before, after, view) {
   // ha: plain hash of the created draft's content, compared by ws_undo (no timestamp, no version key).
   if (!before) return { ...e, op: 'create', va: v('after', after), ha: h16(stripDoc(after)) };
   // The recreate payload stays the token's view (shown), so an undo never writes fields the token cannot read back.
-  if (!after) return { ...e, op: 'delete', vb: v('before', before), doc: stripDoc(view && view.before !== undefined ? view.before : before) };
+  if (!after) {
+    // cr: the original createdBy/updatedBy ids (ws_undo restores them and checks the image's fields against them)
+    const cr = info.creators && (info.creators.createdBy != null || info.creators.updatedBy != null) ? { cb: info.creators.createdBy ?? null, ub: info.creators.updatedBy ?? null } : null;
+    return { ...e, op: 'delete', vb: v('before', before), doc: stripDoc(view && view.before !== undefined ? view.before : before), ...(cr ? { cr } : {}) };
+  }
   const attrs = M.attrsOf(S, info.uid);
   const f = {};
   const r = {};

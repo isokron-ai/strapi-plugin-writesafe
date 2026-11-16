@@ -274,7 +274,11 @@ module).
   than `max_documents`, get `too_many_documents`. The agent cannot approve: see [`tools-approvals.md`](tools-approvals.md)
   (the plugin README has the summary).
 - Filters are checked against read permission. A filter on a field the token cannot read is refused, never silently
-  dropped. The action's permission conditions are added.
+  dropped, and so is a field that only a read rule with conditions allows (the field must be readable on every document
+  the selection may count: allowed by a read rule without conditions, or by every read rule). Inside a relation or media
+  field (`{"category": {"name": {"$eq": "News"}}}`), the target's fields need a read rule without conditions on the
+  target type (for media, the Media Library's); `id` and `documentId` always pass. The read conditions and the action's
+  permission conditions are added, and the read conditions are applied again on every chunk of a running job.
 - `ops` may add rows, and add or remove single links by ref (1.0 hardening item 20): `{op: "add" | "remove", field, ref}`
   on a to-many relation or a multiple media field, or with `path` inside a single component. A re-tag (remove News,
   add Updates) keeps every other link of each document; a document where every ref op is a no-op is `unchanged`. Keyed

@@ -65,7 +65,7 @@ function changedSubPaths(strapi, uid, data, prev) {
  * raw: the current raw draft (read under lock), or null to create the locale.
  * Returns { raw: updatedRaw, doc: normalized }.
  */
-async function writeFields(strapi, ctx, E, { tool, action, uid, documentId, locale, raw, data, args, dryRun }) {
+async function writeFields(strapi, ctx, E, { tool, action, uid, documentId, locale, raw, data, args, dryRun, creators }) {
   const pc = E.permissionChecker(strapi, ctx, uid);
   const creating = !raw;
   if (creating ? pc.cannot.create({ locale }) : pc.cannot.update(raw)) {
@@ -82,6 +82,8 @@ async function writeFields(strapi, ctx, E, { tool, action, uid, documentId, loca
   const dropped = Object.keys(data).filter((k) => !(k in (sanitized || {})));
   if (dropped.length) throw new E.WsError({ code: 'forbidden', message: `This token cannot write field(s): ${dropped.join(', ')}. Nothing was written.` });
   const payload = setCreatorFields({ user: ctx.user, isEdition: !creating })(sanitized);
+  if (creating && creators && creators.createdBy != null) payload.createdBy = creators.createdBy; // ws_undo of a delete
+  if (creating && creators && creators.updatedBy != null) payload.updatedBy = creators.updatedBy;
   const info = { tool, action: creating ? 'create' : action || 'patch', uid, documentId, locale: locale || null, args, dryRun: Boolean(dryRun) };
   await MOD.beforeWrite(ctx, info);
   const updatedRaw = await strapi.documents(uid).update({
@@ -145,12 +147,12 @@ function stripIds(strapi, uid, value, attrsOverride) {
  * through the Document Service (Strapi fills the non-localized fields from that sibling, so only localized fields are
  * sent and the other locales are not touched). With nothing left, the document is created again with its documentId.
  */
-async function recreate(strapi, ctx, E, { tool, uid, documentId, locale, raw, data, args, dryRun }) {
+async function recreate(strapi, ctx, E, { tool, uid, documentId, locale, raw, data, args, dryRun, creators }) {
   if (raw) return writeFields(strapi, ctx, E, { tool, action: 'patch', uid, documentId, locale, raw, data, args, dryRun });
   const sibling = await strapi.db.query(uid).findOne({ select: ['id'], where: { documentId } });
   if (sibling) {
     const own = L.localizedOnly(strapi, uid, data);
-    return writeFields(strapi, ctx, E, { tool, action: 'create', uid, documentId, locale, raw: null, data: own, args, dryRun });
+    return writeFields(strapi, ctx, E, { tool, action: 'create', uid, documentId, locale, raw: null, data: own, args, dryRun, creators });
   }
   const pc = E.permissionChecker(strapi, ctx, uid);
   if (pc.cannot.create(locale ? { locale } : undefined)) throw new E.WsError({ code: 'forbidden', message: `This token cannot create ${uid}.` });
@@ -162,6 +164,9 @@ async function recreate(strapi, ctx, E, { tool, uid, documentId, locale, raw, da
   const dropped = Object.keys(data).filter((k) => !(k in (sanitized || {})));
   if (dropped.length) throw new E.WsError({ code: 'forbidden', message: `This token cannot write field(s): ${dropped.join(', ')}. Nothing was written.` });
   const payload = setCreatorFields({ user: ctx.user })(sanitized);
+  // ws_undo of a delete: the document comes back under its original creator and editor, not the undoer's
+  if (creators && creators.createdBy != null) payload.createdBy = creators.createdBy;
+  if (creators && creators.updatedBy != null) payload.updatedBy = creators.updatedBy;
   const info = { tool, action: 'create', uid, documentId, locale: locale || null, args, dryRun: Boolean(dryRun) };
   await MOD.beforeWrite(ctx, info);
   // The Document Service makes a new documentId on create; the entity layer keeps one given in data (Strapi's own

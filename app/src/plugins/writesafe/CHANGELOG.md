@@ -45,7 +45,21 @@ the Upgrading notes below are complete.
   the write's facts (ids, versions, `changed`). ws_replace does not search such a document (job item `skipped`, reason
   `not_readable`). Filters and match counts only consider documents the token can read: ws_bulk and ws_replace refuse a
   token without read permission on the type (`forbidden`) and add the token's read conditions to the selection, so a
-  count, a scan total or a job's documents never include a document the token cannot read.
+  count, a scan total or a job's documents never include a document the token cannot read. Filters may only use fields
+  the token can read on every document (ws_bulk, ws_replace, ws_find): a field allowed only by a read rule with
+  conditions (for example "secretCode on own pages", next to "title on every page") is refused (`invalid`, naming the
+  fields); inside a relation or media field, the target's fields need a read rule without conditions on the target type
+  (the Media Library's for files), `id` and `documentId` always pass. The same rule applies to ws_find's `sort`. A job planned before the
+  upgrade gets the token's read conditions applied again on every chunk.
+- **(contract) Read fields per document:** replies show only the fields the token may read on each document. Strapi's
+  read sanitizer allows every field when any read rule has no field list, whatever that rule's conditions, so with
+  "title on every page" plus "every field on own pages" ws_get, ws_find, write replies and conflict replies showed
+  other users' fields. Each document's fields are now checked against the token's rules with that document as the
+  subject (components per sub-field; an unreadable component is left out whether it is empty or not; related documents
+  are shown by their id only). **(contract)** ws_undo of a delete brings the document back under its original
+  `createdBy`/`updatedBy` (kept with the history entry), and only for a token that may read every field of the stored
+  image on the original document; otherwise it is refused (`forbidden`). Receipts written before the upgrade have no
+  stored creator, so their deletes are undone only by a token that may read the image on any document.
 - **Memory and tools/list on Strapi 5.47 to 5.52.1** (zod 3.25 `@strapi/utils`): tool input and output schemas are
   built once per registration instead of on every MCP session; on those minors zod 3.25 kept every rebuilt schema's
   descriptions, and the heap grew until Strapi stopped. Argument descriptions also reach tools/list there (the MCP SDK

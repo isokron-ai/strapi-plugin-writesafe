@@ -5,6 +5,7 @@
  * Design notes: docs/internals.md, section "server/modules/history/undo.js".
  */
 const M = require('../../model');
+const CM = require('../../compat/content-manager');
 const W = require('../_lib/write');
 const C = require('./capture');
 
@@ -245,8 +246,17 @@ async function revertOne(strapi, ctx, E, e, opt) {
   }
   if (e.op === 'delete') {
     if (raw && !opt.force) return { kind: 'conflict', value: await conflictPayload(strapi, ctx, E, e, raw, ['(document exists again)'], { item: where.item }) };
+    // The image is kept server-side with Strapi's field-level sanitizer, so it can hold fields the deleting token could
+    // not read on this page. Only an undoer who may read every field of it ON THE ORIGINAL PAGE (its creator restored)
+    // may bring it back; otherwise the recreate would show the content to the undoer, or make the page theirs.
+    const cr = e.cr || {};
+    const original = { ...(e.doc || {}), ...(e.locale ? { locale: e.locale } : {}), createdBy: cr.cb != null ? { id: cr.cb } : null, updatedBy: cr.ub != null ? { id: cr.ub } : null };
+    const pcu = E.permissionChecker(strapi, ctx, e.uid);
+    if (E.cannotReadDoc(pcu, original) || M.canonical(CM.readableOnly(strapi, e.uid, pcu, original, e.doc || {})) !== M.canonical(e.doc || {})) {
+      throw new E.WsError({ code: 'forbidden', message: 'This token may not undo this delete. Nothing was undone.' });
+    }
     const data = W.stripIds(strapi, e.uid, e.doc);
-    const r = await W.recreate(strapi, ctx, E, { tool: 'ws_undo', uid: e.uid, documentId: e.documentId, locale: e.locale || undefined, raw, data, args: a, dryRun: opt.dryRun });
+    const r = await W.recreate(strapi, ctx, E, { tool: 'ws_undo', uid: e.uid, documentId: e.documentId, locale: e.locale || undefined, raw, data, args: a, dryRun: opt.dryRun, creators: { createdBy: cr.cb ?? null, updatedBy: cr.ub ?? null } });
     tag();
     return { kind: 'item', value: { ...where, op: 'recreated', status: 'draft', version: versionOf(strapi, e.uid, r.raw), ...(r.doc.documentId !== e.documentId ? { new_documentId: r.doc.documentId } : {}) } };
   }

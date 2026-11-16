@@ -285,8 +285,9 @@ The codes are:
   - a publish, a delete, or a translation into a target locale that changed: `retry: {hint}` with no version. The draft
     (or locale) is no longer what was reviewed; repeating the call with the new version would publish, delete or
     overwrite a state nobody approved. The hint says to show the change and get approval for the new state.
-  `current`, `current_rows`, `ws_get` and `return: "full"` show only the fields the token may read; an unreadable field
-  is left out, never shown empty.
+  `current`, `current_rows`, `ws_get` and `return: "full"` show only the fields the token may read on that document (its
+  read rules checked with the document as the subject, so a rule limited to own entries opens fields on own entries
+  only); an unreadable field is left out, never shown empty.
   A token that may not read the document at all (no read permission, or a condition this document fails) gets a
   conflict with `readable: false` and no `current`, `current_rows` or version. A ws_undo conflict shows the fields in
   `changed_since` and lists the other readable fields in `omitted`. Write replies follow the same rule: such a token gets
@@ -656,7 +657,7 @@ documents and no version.
 | Argument | |
 |---|---|
 | `uid` | required; a covered content type |
-| `filters` | Strapi filter syntax, as ws_bulk: e.g. `{"title": {"$containsi": "sale"}}`. A filter on a field the token cannot read, an unknown field or operator is refused (`invalid`), never ignored |
+| `filters` | Strapi filter syntax, as ws_bulk: e.g. `{"title": {"$containsi": "sale"}}`. A filter on a field the token cannot read on every document (a field only a read rule with conditions allows), an unknown field or operator is refused (`invalid`), never ignored; inside a relation or media field a target field needs a read rule without conditions on the target type (`id` and `documentId` always pass). `sort` follows the same rule |
 | `locale` | localized types; default: the default locale |
 | `fields` | 1 to 10 scalar fields to show (text cut at 200 characters); default: the title-like field. Lists, components, blocks, relations, media: ws_get. A field the token cannot read is `forbidden` |
 | `sort` | one field, `"field"` or `"field:asc|desc"` (a scalar field, `updatedAt`, `createdAt`); default: creation order |

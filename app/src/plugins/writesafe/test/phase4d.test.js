@@ -115,12 +115,15 @@ const doc = (n, extra = {}) => ({
   items: [{ id: 10 + n, label: `row ${n}` }], ...extra,
 });
 
-function findTool(strapi) {
+// One read rule without conditions or a field list (the field-level check of _lib/filters.js passes; the mock's own
+// sanitizer still hides `secret`).
+const FREE_READ = { rulesFor: () => [{}] };
+function findTool(strapi, userAbility = FREE_READ) {
   const tools = require('../server/tools');
   const FIND = require('../server/modules/find');
   const defs = FIND.tools(strapi, tools.apiFor(strapi));
   const def = defs.find((d) => d.name === 'ws_find');
-  return { def, call: async (args) => def.createHandler(strapi, { userAbility: {}, user: { id: 1 } })({ args }) };
+  return { def, call: async (args) => def.createHandler(strapi, { userAbility, user: { id: 1 } })({ args }) };
 }
 
 test('ws_find: a module, on by default, with a small strict schema', () => {

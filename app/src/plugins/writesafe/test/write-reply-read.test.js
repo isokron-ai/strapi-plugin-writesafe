@@ -285,11 +285,13 @@ test('ws_bulk / ws_replace selection: an own-entries token filtering on another 
   try {
     const J = require('../server/modules/_bulk/jobs');
     const s = filterStrapi({ readRule: true, readConds: { createdBy: { id: { $eq: 1 } } } });
-    const hit = await J.match(s.strapi, ctx, PAGE, null, { secretCode: { $eq: 'K-2' } }, 'patch', 1000);
+    // one read rule, own entries, every field: a filter on secretCode is allowed (every read rule allows it)
+    const ownCtx = { ...ctx, userAbility: { rulesFor: () => [{ conditions: { 'createdBy.id': 1 } }] } };
+    const hit = await J.match(s.strapi, ownCtx, PAGE, null, { secretCode: { $eq: 'K-2' } }, 'patch', 1000);
     assert.strictEqual(hit.count, 0, 'a right guess about another user\'s document gives no signal');
-    const miss = await J.match(s.strapi, ctx, PAGE, null, { secretCode: { $eq: 'K-9' } }, 'patch', 1000);
+    const miss = await J.match(s.strapi, ownCtx, PAGE, null, { secretCode: { $eq: 'K-9' } }, 'patch', 1000);
     assert.strictEqual(miss.count, hit.count);
-    const own = await J.match(s.strapi, ctx, PAGE, null, { secretCode: { $eq: 'K-1' } }, 'patch', 1000);
+    const own = await J.match(s.strapi, ownCtx, PAGE, null, { secretCode: { $eq: 'K-1' } }, 'patch', 1000);
     assert.strictEqual(own.count, 1);
     assert.deepStrictEqual(own.ids, ['a1']);
     assert.ok(JSON.stringify(hit.qfilters).includes('createdBy'), 'the read conditions are part of the selection');
