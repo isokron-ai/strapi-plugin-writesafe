@@ -661,7 +661,7 @@ def sql(q):
                               os.environ.get("SPIKE_DB_NAME", "strapi"), "-e", "SET SESSION sql_mode='ANSI_QUOTES'; " + q], env=dict(os.environ, MYSQL_PWD=pw), capture_output=True, text=True, check=True).stdout
         return [l.split("\t") for l in out.splitlines() if l]
     if os.environ.get("SPIKE_PG"):
-        out = subprocess.run(["docker", "exec", os.environ["SPIKE_PG_CONTAINER"], "psql", "-U", os.environ.get("SPIKE_PG_USER", "postgres"), "-d", os.environ.get("SPIKE_DB_NAME", "strapi"), "-At", "-F", "\t", "-c", q],
+        out = subprocess.run(["docker", "exec", *common.pg_exec_env(), os.environ["SPIKE_PG_CONTAINER"], "psql", "-U", os.environ.get("SPIKE_PG_USER", "postgres"), "-d", os.environ.get("SPIKE_DB_NAME", "strapi"), "-At", "-F", "\t", "-c", q],
                              capture_output=True, text=True, check=True).stdout
         return [l.split("\t") for l in out.splitlines() if l]
     c = sqlite3.connect(common.DB, timeout=30)
@@ -730,10 +730,15 @@ def t_review_m1_marks_survive_concurrent_undos():
     [t.start() for t in ts]
     [t.join() for t in ts]
     e, h = ws("ws_history", {"receipt_id": job})
-    rec = (h.get("receipts") or [{}])[0]
-    marked = set((rec.get("undone_items") or {}).keys())
-    check("every entry of the receipt is marked undone exactly by someone (no mark lost to a stale read)",
-          marked == set(str(i) for i in range(8)) and rec.get("undoable") is False, [rec.get("undone_items"), out.get("job")])
+    # under load the bulk job's time budget can split the 8 documents across several chunk receipts (item indices
+    # restart at 0 in each): every entry of EVERY receipt of the job must be marked
+    recs = [r for r in (h.get("receipts") or []) if not r.get("undo_of")]
+    per = [(len(r.get("items") or []), len(r.get("undone_items") or {}), r.get("undoable")) for r in recs]
+    covered = {it.get("documentId") for r in recs for it in (r.get("items") or [])}
+    check("every entry of every receipt of the job is marked undone exactly by someone (no mark lost to a stale read)",
+          bool(recs) and covered == set(docs) and sum(n for n, _, _ in per) == 8 and all(u is False for _, _, u in per)
+          and all(set((r.get("undone_items") or {}).keys()) == {str(i) for i in range(len(r.get("items") or []))} for r in recs),
+          [[(r.get("receipt_id"), r.get("undone_items")) for r in recs], out.get("job")])
     check("every document back to its value", [x["summary"] for x in pages_with(pre)] == ["s"] * 8)
 
 

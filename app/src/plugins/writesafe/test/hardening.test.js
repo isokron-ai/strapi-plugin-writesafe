@@ -58,9 +58,11 @@ test('item 3: to-many relations and multiple media are lists; a bare updatedAt i
   assert.ok(M.isListAttr({ type: 'dynamiczone', components: [] }) && M.isListAttr({ type: 'blocks' }));
   assert.ok(!M.isListAttr({ type: 'string' }));
   assert.throws(() => E.assertVersion('2026-01-01T00:00:00.000Z'), (e) => e.payload.code === 'invalid' && /bare updatedAt/.test(e.payload.message));
-  // 1.0 hardening item 15: the rc.2 token form is refused as version_format; a v2 token passes the format check
+  // 1.0 hardening item 15: the rc.2 token form is refused as version_format; since D1 a v2 token is too (re-read), and
+  // a v3 token passes the format check
   assert.throws(() => E.assertVersion('2026-01-01T00:00:00.000Z~0123456789ab'), (e) => e.payload.code === 'version_format');
-  assert.doesNotThrow(() => E.assertVersion(`v2.${'A'.repeat(43)}`));
+  assert.throws(() => E.assertVersion(`v2.${'A'.repeat(43)}`), (e) => e.payload.code === 'version_format');
+  assert.doesNotThrow(() => E.assertVersion(`v3.${'A'.repeat(43)}`));
   assert.doesNotThrow(() => E.assertVersion(undefined));
 });
 

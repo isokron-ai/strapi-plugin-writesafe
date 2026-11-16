@@ -18,6 +18,11 @@ module.exports = ({ env }) => ({
       lenientArgs: env.bool('WRITESAFE_LENIENT_ARGS', false),
       // Document Service lock (1.0 hardening item 11): WRITESAFE_DOCUMENT_SERVICE_LOCK=false turns it off.
       documentServiceLock: env.bool('WRITESAFE_DOCUMENT_SERVICE_LOCK', true),
+      // bench X4: a stale admin form is refused with 409 (WRITESAFE_STALE_FORM_GUARD=false turns it off)
+      // WRITESAFE_STALE_FORM_OTHER_WRITERS=false: REST, GraphQL and other plugins' writes no longer refuse an older form
+      staleFormGuard: process.env.WRITESAFE_STALE_FORM_OTHER_WRITERS
+        ? { enabled: env.bool('WRITESAFE_STALE_FORM_GUARD', true), otherWriters: env.bool('WRITESAFE_STALE_FORM_OTHER_WRITERS') }
+        : env.bool('WRITESAFE_STALE_FORM_GUARD', true),
       // force (skip the version check) for agents: unset = the plugin's default (off in guard and hide, on in keep/guide)
       allowForce: process.env.WRITESAFE_ALLOW_FORCE ? env.bool('WRITESAFE_ALLOW_FORCE') : undefined,
       // Feature modules (server/modules/<name>): WRITESAFE_MODULES=bulk,localize,media turns them on; a leading "-" turns
@@ -50,6 +55,8 @@ module.exports = ({ env }) => ({
         // paused jobs and approved jobs already under way (stream G re-review A3); float for the retention test
         longHorizonDays: env.float('WRITESAFE_RETENTION_LONG_DAYS', 30),
         pruneEverySeconds: env.int('WRITESAFE_RETENTION_PRUNE_EVERY_SECONDS', 3600),
+        // the stale form guard's journal (float: tests prune it in seconds)
+        journalHours: env.float('WRITESAFE_RETENTION_JOURNAL_HOURS', 72),
       },
       // [stream G] bulk-job approvals and the in-Strapi runner (plugin README, Approvals). Tests set them as JSON;
       // unset, the plugin defaults apply (approvals on, runner off).

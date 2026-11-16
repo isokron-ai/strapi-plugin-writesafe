@@ -74,8 +74,10 @@ References:
 
 ## Safety model
 
-- **Versions.** `ws_get` returns a `version` token (`v2.<mac>`, an HMAC keyed from `APP_KEYS` over the uid, documentId,
-  locale and a semantic hash of the draft). `set` and `unset` need `expected_version`, an `if_match` value for every
+- **Versions.** `ws_get` returns a `version` token (`v3.<mac>`, an HMAC keyed from `APP_KEYS` over the uid, documentId,
+  locale, the draft's content revision and a semantic hash of the draft; the revision moves whenever a Document
+  Service write changes the draft's content, so a token never comes back after A → B → A; it needs
+  `documentServiceLock`). `set` and `unset` need `expected_version`, an `if_match` value for every
   field they write (the mergeable path for scalar edits: other fields may have changed), or `force`; without one a
   write is `precondition_required`, and a stale one is `version_conflict` with the current values and a retry hint. A bare
   `updatedAt` or an rc.2 token is refused. Rotating or reordering `APP_KEYS` makes every version and row key stale.
@@ -108,6 +110,17 @@ References:
   Service lock (`documentServiceLock`, default on) makes admin Saves and agent writes queue instead of deadlocking.
   [Concurrency](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/reference.md#concurrency),
   [locking](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/locking.md).
+- **Stale admin forms** (`staleFormGuard`, default on, needs `documentServiceLock`): an admin-panel Save, publish or
+  discard whose form was loaded before a writesafe write is merged with it (the agent's changes the editor did not
+  touch stay; a note names them) or refused with 409 when both changed the same thing; after a 409 a panel keeps the
+  editor's unsaved values. Covers writes through the plugin's tools (and agent deletes and discards). **Behaviour
+  change:** by default a write by REST, GraphQL, another plugin or review workflows also makes an older open form
+  refuse its Save (409; the panel keeps the editor's values); `staleFormGuard: { otherWriters: false }` keeps Strapi's
+  last-write-wins for those writers. Writes that bypass the
+  Document Service (`strapi.db.query`, raw SQL) are never seen. An admin panel on another origin needs CORS set up:
+  `strapi::cors` with `headers` including `X-Writesafe-Base` and `expose` including `X-Writesafe-Version` and
+  `X-Writesafe-Merged`, or its Saves of agent-changed entries are refused.
+  [Stale admin forms](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/locking.md#stale-admin-forms-staleformguard-default-on).
 - **History** (on by default): every write stores a receipt with a before-image, and `ws_undo` reverts it unless the
   content changed since.
   [History and undo](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/tools-l10n-history.md).
@@ -148,6 +161,7 @@ module.exports = () => ({
       baseVersion: 'auto',       // auto | off: pass the version through to Strapi's own check when it exists
       lenientArgs: false,        // default: refuse "true", "5", "{...}" sent as strings for booleans, integers, objects, arrays; true accepts them
       documentServiceLock: true, // lock before every Document Service update/delete/publish (see Safety model)
+      staleFormGuard: true,      // merge an admin Save with agent writes since its form loaded, or 409 (also after REST/GraphQL writes; { otherWriters: false } turns that part off)
       allowForce: false,         // may agents send force: true? default: false in guard/hide, true in keep/guide
       // modules: history and find are on unless set to false; the others are off unless set to true (see Tools)
       modules: { create: true, delete: true, bulk: true, replace: true, copy: true, localize: true, media: true }, // + history: false, find: false to turn those off

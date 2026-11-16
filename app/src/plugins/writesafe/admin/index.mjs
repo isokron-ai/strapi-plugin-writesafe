@@ -2,6 +2,7 @@
 // admin approves or rejects bulk jobs agents asked for, and pauses, resumes or cancels running ones.
 // Plain ES module with React.createElement (no JSX, no build step): Strapi's admin bundler takes it as it is.
 import * as React from 'react';
+import { install as installFormBase } from './form-base.mjs';
 
 const PERMISSIONS = [{ action: 'plugin::writesafe.approve-jobs', subject: null }];
 
@@ -15,6 +16,8 @@ function Icon() {
 
 export default {
   register(app) {
+    // stale form guard (bench X4): each tab echoes the version its edit form was loaded at (form-base.mjs)
+    installFormBase();
     app.addMenuLink({
       to: 'plugins/writesafe',
       icon: Icon,

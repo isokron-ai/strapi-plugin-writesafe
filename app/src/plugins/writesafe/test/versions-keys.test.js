@@ -51,8 +51,8 @@ const v = (d, uid = PAGE) => M.versionOf(strapi, uid, M.normalize(strapi, uid, d
 const clone = (x) => JSON.parse(JSON.stringify(x));
 
 // ---------------------------------------------------------------- item 15: semantic version
-test('item 15: the token is "v2." and a full-length HMAC (43 base64url characters)', () => {
-  assert.match(v(draft()), /^v2\.[A-Za-z0-9_-]{43}$/);
+test('item 15 (D1): the token is "v3." and a full-length HMAC (43 base64url characters)', () => {
+  assert.match(v(draft()), /^v3\.[A-Za-z0-9_-]{43}$/);
   assert.ok(M.isVersionToken(v(draft())));
   assert.ok(!M.isVersionToken('2026-11-13T10:00:00.000Z~0123456789ab'), 'the rc.2 form is not a v2 token');
   assert.ok(M.isLegacyVersionToken('2026-11-13T10:00:00.000Z~0123456789ab'));

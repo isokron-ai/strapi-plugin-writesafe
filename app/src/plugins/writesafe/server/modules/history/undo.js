@@ -155,7 +155,7 @@ async function conflictPayload(strapi, ctx, E, e, raw, fields, extra) {
   return p;
 }
 
-/** Version token of a draft (phase 2 A: "v2." over the uid, documentId, locale and the semantic hash of the raw row). */
+/** Version token of a draft (phase 2 A, D1: "v3." over the uid, documentId, locale, content revision and the semantic hash of the raw row). */
 const versionOf = (strapi, uid, raw) => M.versionOf(strapi, uid, raw);
 
 /** Lock every target first, in one order (compat/db.js lockDocuments); returns the targets and their drafts. */

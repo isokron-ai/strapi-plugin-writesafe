@@ -27,7 +27,7 @@ const TYPES = {
   // 1.0 hardening item 16b: the row is there, but the key no longer matches it (edited since, another database, a
   // reused id, an rc.2 key without a MAC). Read again; the error never carries the row's new key.
   stale_row_key: [false, true],
-  // 1.0 hardening item 15: a version token of rc.2 / Phase 1 ("<updatedAt>~<hash>"); read again for a "v2." token
+  // 1.0 hardening item 15: a version token of rc.2 / Phase 1 ("<updatedAt>~<hash>"); read again for a "v3." token
   version_format: [false, true],
   count_changed: [false, true],
   // bulk jobs (1.0 hardening item 17): the planned set changed, or the plan is old: dry-run again before a new start

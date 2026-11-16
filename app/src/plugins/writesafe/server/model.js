@@ -287,20 +287,35 @@ function contentHash(doc) {
 
 const isoOf = (d) => (d == null ? null : new Date(d).toISOString());
 
-const VERSION_PREFIX = 'v2';
+const VERSION_PREFIX = 'v3';
 /**
- * The version token of a draft (normalized or raw): "v2.<HMAC-SHA256 over v2, uid, documentId, locale and the semantic
- * hash, base64url>". documentId and locale are read from the draft itself.
+ * The draft's content revision, attached to a draft read through the Document Service (compat/stale-form.js: per
+ * document and locale, it grows whenever a Document Service write changes that draft's content). A symbol: it never
+ * reaches JSON, and an object spread keeps it.
+ */
+const REVISION = Symbol.for('writesafe.revision');
+/**
+ * The version token of a draft (normalized or raw): "v3.<HMAC-SHA256 over v3, uid, documentId, locale, the draft's
+ * content revision and the semantic hash, base64url>". documentId and locale are read from the draft itself; the
+ * revision from its REVISION symbol (0 when the draft carries none: the counter is off or no change was counted yet).
+ * The revision makes the token change on every content change, also when the content returns to an earlier state
+ * (A -> B -> A): an old token never matches again, so a new request built from a fresh read is never answered as a
+ * replay of an earlier one (self-test D1). Content alone (v2, 1.0 hardening item 15) repeated after A -> B -> A.
  */
 function versionOf(strapi, uid, doc) {
   if (!strapi || typeof uid !== 'string') throw new Error('versionOf(strapi, uid, doc): the uid binds the version (1.0 hardening item 15)');
   const d = doc || {};
-  const msg = [VERSION_PREFIX, uid, d.documentId || '', d.locale || '', semanticHash(strapi, uid, d)].join('\n');
+  const rev = Number(d[REVISION]) || 0;
+  const msg = [VERSION_PREFIX, uid, d.documentId || '', d.locale || '', String(rev), semanticHash(strapi, uid, d)].join('\n');
   return `${VERSION_PREFIX}.${mac64(msg)}`;
 }
 
-/** A version token as ws_get returns it since 1.0 hardening item 15: "v2." and 43 base64url characters. */
-const isVersionToken = (v) => typeof v === 'string' && /^v2\.[A-Za-z0-9_-]{43}$/.test(v);
+/**
+ * A version token: "v3." and 43 base64url characters. A "v2." token (content only, before the content revision) is
+ * well formed and never matches; engine.assertVersion refuses it as version_format (re-read), so an agent is not told
+ * the document changed when it may not have.
+ */
+const isVersionToken = (v) => typeof v === 'string' && /^v[23]\.[A-Za-z0-9_-]{43}$/.test(v);
 /** The token format of 1.0.0-rc.2 and the Phase 1 builds ("<updatedAt ISO>~<12 hex>"), refused as version_format. */
 const isLegacyVersionToken = (v) => typeof v === 'string' && /^[^~\s]+~[0-9a-f]{12}$/.test(v);
 
@@ -474,7 +489,7 @@ function unsupportedNested(strapi, cuid, depth = 0) {
 }
 
 module.exports = {
-  populateFor, fieldKind, isListKind, isListAttr, isVersionToken, isLegacyVersionToken, canonical, sha, contentHash, versionOf, versionMatches, rowKey, rowKeys,
+  REVISION, populateFor, fieldKind, isListKind, isListAttr, isVersionToken, isLegacyVersionToken, canonical, sha, contentHash, versionOf, versionMatches, rowKey, rowKeys,
   rowHandle, rowHandles, keyIdentity, unhashable, isLocalizedUid, POPULATE_DEPTH, setRowEpoch, rowEpoch, semanticDoc, semanticRow, semanticValue, semanticHash, KEY_MAC_CHARS,
   keyScope, presentDoc, attrsOf, unsupportedNested, isoOf, SKIP_KEYS, setVersionKey, mac, normalize, isToMany,
   creatorPopulate, CREATOR_QUERY, permQueryPopulate, setConditionPopulate, conditionPaths, populateForPaths,

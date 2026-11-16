@@ -55,7 +55,7 @@ const moduleNames = () => fs.readdirSync(path.join(__dirname, '..', 'modules'))
   .filter((n) => !n.startsWith('_') && fs.existsSync(path.join(__dirname, '..', 'modules', n, 'index.js'))).sort();
 
 const SECTIONS = [
-  ['agents', 'Agents and Strapi\'s own tools', ['builtinUpdates', 'allowForce', 'serverInstructions', 'lenientArgs', 'baseVersion', 'documentServiceLock']],
+  ['agents', 'Agents and Strapi\'s own tools', ['builtinUpdates', 'allowForce', 'serverInstructions', 'lenientArgs', 'baseVersion', 'documentServiceLock', 'staleFormGuard']],
   ['tokens', 'Admin API tokens', ['adminTokens']],
   ['modules', 'Modules', null],
   ['approvals', 'Bulk job approvals', ['approvals.enabled', 'approvals.automaticMax', 'approvals.twoApproverAbove', 'approvals.maxDocuments', 'approvals.escalate.publish', 'approvals.escalate.relations',
@@ -65,7 +65,7 @@ const SECTIONS = [
   ['runner', 'Job runner', ['runner.enabled', 'runner.workers', 'runner.pollMs', 'runner.leaseMs', 'runner.heartbeatMs', 'runner.chunkPauseMs', 'runner.killSwitch']],
   ['media', 'Media import', ['media.allow', 'media.allowedTypes', 'media.maxBytes', 'media.maxPixels', 'media.timeoutMs', 'media.maxRedirects', 'media.maxItems', 'media.concurrency']],
   ['history', 'History and undo', ['history.retentionDays', 'history.maxBeforeBytes', 'history.maxJobBeforeBytes', 'history.pruneEverySeconds', 'history.undo']],
-  ['retention', 'Receipts retention', ['retention.keyHours', 'retention.jobHours', 'retention.claimMinutes', 'retention.implicitClaimMinutes', 'retention.longHorizonDays', 'retention.pruneEverySeconds']],
+  ['retention', 'Receipts retention', ['retention.keyHours', 'retention.jobHours', 'retention.claimMinutes', 'retention.implicitClaimMinutes', 'retention.longHorizonDays', 'retention.pruneEverySeconds', 'retention.journalHours']],
 ];
 // hard limits (code constants) shown next to the values they bound
 const HARD = {

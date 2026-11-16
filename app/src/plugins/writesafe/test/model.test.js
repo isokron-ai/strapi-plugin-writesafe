@@ -33,10 +33,10 @@ test('content hash ignores timestamps and authors but not content', () => {
   assert.notStrictEqual(M.contentHash(d), M.contentHash({ ...d, items: [{ id: 2, label: 'a' }] }), 'a recreated row changes the version');
 });
 
-test('version token (1.0 hardening item 15): "v2.<mac>", no timestamp, only the full token matches', () => {
+test('version token (1.0 hardening item 15, D1): "v3.<mac>", no timestamp, only the full token matches', () => {
   const d = { documentId: 'd1', title: 't', updatedAt: '2026-01-01T00:00:00.000Z' };
   const v = M.versionOf(strapi, 'api::page.page', d);
-  assert.match(v, /^v2\.[A-Za-z0-9_-]{43}$/);
+  assert.match(v, /^v3\.[A-Za-z0-9_-]{43}$/);
   assert.ok(M.versionMatches(strapi, 'api::page.page', v, d));
   assert.ok(M.versionMatches(strapi, 'api::page.page', v, { ...d, updatedAt: '2027-01-01T00:00:00.000Z' }), 'updatedAt is not a matching condition');
   assert.ok(!M.versionMatches(strapi, 'api::page.page', '2026-01-01T00:00:00.000Z', d), 'bare updatedAt refused');

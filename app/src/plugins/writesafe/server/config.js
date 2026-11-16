@@ -27,6 +27,12 @@
  *   long idempotency keys, bulk jobs, unanswered claims and the implicit retry records of versioned writes stay in the
  *   receipts table (server/retention.js).
  * documentServiceLock: true (default): the Document Service lock (compat/document-lock.js); false: not registered.
+ * staleFormGuard: true (default) | false | { enabled: true, otherWriters: true }: a Content Manager Save (or publish,
+ *   discard) whose form was loaded before a writesafe write is merged with it, or refused with HTTP 409 when both changed
+ *   the same thing, instead of overwriting the agent's change (compat/stale-form.js, rebase.js). Needs
+ *   documentServiceLock. otherWriters (default true) also makes an older form refuse (409) after a write by REST,
+ *   GraphQL, other plugins or review workflows; otherWriters: false gives Strapi's last-write-wins for them. false:
+ *   Saves behave as in Strapi.
  * allowForce: whether agents may send `force: true` (skip the version check: last write wins) to ws_patch, ws_batch,
  *   ws_delete, ws_localize and ws_undo (server/force.js). Default: false in guard and hide, true in keep and guide (their
  *   built-in update tools already overwrite without a check). Off, the argument is not offered and is refused.
@@ -52,6 +58,8 @@ const defaults = {
   lenientArgs: false,
   // 1.0 hardening item 11 (owner decision, 14 Nov): on by default.
   documentServiceLock: true,
+  // bench X4: refuse a stale admin form (409) instead of letting it overwrite an agent's write; needs the lock above
+  staleFormGuard: true,
   // stream G re-review A1: 'any' (Strapi's behaviour) or 'mcp-only' (admin API tokens refused on every admin route
   // but the MCP endpoint). 'any' by default: admin tokens have uses outside MCP; agents should get 'mcp-only'.
   adminTokens: 'any',
@@ -108,6 +116,13 @@ function validator(cfg) {
   if (cfg.runner !== undefined) {
     if (!cfg.runner || typeof cfg.runner !== 'object') throw new Error('writesafe.runner must be an object');
     require('./runner/runner').settings(cfg.runner); // throws on a bad value
+  }
+  if (cfg.staleFormGuard !== undefined && typeof cfg.staleFormGuard !== 'boolean') {
+    const g = cfg.staleFormGuard;
+    const keys = g && typeof g === 'object' && !Array.isArray(g) ? Object.keys(g) : null;
+    if (!keys || keys.some((k) => !['enabled', 'otherWriters'].includes(k)) || keys.some((k) => typeof g[k] !== 'boolean')) {
+      throw new Error('writesafe.staleFormGuard must be a boolean or { enabled?: boolean, otherWriters?: boolean }');
+    }
   }
   for (const k of ['serverInstructions', 'lenientArgs', 'documentServiceLock', 'allowForce']) {
     if (cfg[k] !== undefined && typeof cfg[k] !== 'boolean') throw new Error(`writesafe.${k} must be a boolean`);

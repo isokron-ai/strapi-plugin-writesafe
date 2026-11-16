@@ -103,19 +103,30 @@ def t_lock_all_locales():
           took and took[0]["action"] == "update" and took[0]["rows"] == 2, new)
 
 
+def kept(label, agg):
+    """The stale form guard (bench X4): an admin Save that answered 200 never wrote its form over the agent's edit."""
+    check("%s: the admin's form never overwrote the agent's accepted edit" % label, agg.get("admin_overwrote_agent", 0) == 0, agg)
+
+
 @T
 def t_admin_vs_patch():
-    no_deadlock("admin Save vs ws_patch", L.two_writers("normal", n(30))["aggregate"], allow_agent=STALE_KEY)
+    agg = L.two_writers("normal", n(30))["aggregate"]
+    no_deadlock("admin Save vs ws_patch", agg, allow_agent=STALE_KEY)
+    kept("admin Save vs ws_patch", agg)
 
 
 @T
 def t_admin_vs_heavy_patch():
-    no_deadlock("admin Save vs ws_patch +30 rows", L.two_writers("normal", n(10), heavy=30)["aggregate"], allow_agent=STALE_KEY)
+    agg = L.two_writers("normal", n(10), heavy=30)["aggregate"]
+    no_deadlock("admin Save vs ws_patch +30 rows", agg, allow_agent=STALE_KEY)
+    kept("admin Save vs ws_patch +30 rows", agg)
 
 
 @T
 def t_admin_vs_nested():
-    no_deadlock("admin Save vs ws_patch of a nested component", L.two_writers("nested", n(10))["aggregate"], allow_agent=STALE_KEY)
+    agg = L.two_writers("nested", n(10))["aggregate"]
+    no_deadlock("admin Save vs ws_patch of a nested component", agg, allow_agent=STALE_KEY)
+    kept("admin Save vs ws_patch of a nested component", agg)
 
 
 @T
@@ -151,7 +162,11 @@ def t_admin_delete_vs_patch():
 
 @T
 def t_admin_publish_vs_patch():
-    no_deadlock("admin publish vs ws_patch", L.two_writers("publish", n(10))["aggregate"], allow_agent=STALE_KEY)
+    # a publish whose form predates the agent's committed write is refused (409 publish_unseen; counted apart)
+    agg = L.two_writers("publish", n(10))["aggregate"]
+    no_deadlock("admin publish vs ws_patch", agg, allow_agent=STALE_KEY)
+    kept("admin publish vs ws_patch", agg)
+    check("admin publish vs ws_patch: the only stale form refusals are publish_unseen", set(agg["admin_stale_reasons"]) <= {"publish_unseen"}, agg)
 
 
 @T
@@ -171,6 +186,7 @@ def t_discard_vs_patch():
     # review of PR #15, item 2: discard recreates the draft rows; a waiting lock must take the new ones
     agg = L.discard_vs_patch(n(10))["aggregate"]
     no_deadlock("admin discard vs ws_patch", agg)
+    check("admin discard vs ws_patch: the only stale form refusals are discard_unseen", set(agg["admin_stale_reasons"]) <= {"discard_unseen"}, agg)
     check("admin discard vs ws_patch: no lock on zero rows of an existing page (the recreated rows are locked)", agg["empty_locks"] == 0 or L.DB_LABEL == "sqlite", agg)
 
 

@@ -202,7 +202,8 @@ test('document lock: install registers once when on; off or missing documents.us
   assert.strictEqual(DL.install({ documents: {}, log: { warn() {} } }, true), false);
   assert.strictEqual(C.status['db.document_service_lock'].ok, false);
   assert.strictEqual(DL.install(strapi, true), true);
-  assert.strictEqual(used.length, 1);
+  // the lock, then the stale form guard's read middleware (the document's revision on every read: the version token)
+  assert.strictEqual(used.length, 2);
   assert.strictEqual(C.status['db.document_service_lock'].ok, true);
   assert.ok(C.VERSION_TABLE.some((r) => r.feature === 'db.document_service_lock'), 'listed in the compat table');
 });
@@ -216,7 +217,7 @@ test('documentServiceLock: on by default, boolean only', () => {
 test('strapi-server: the Document Service lock is the first thing register() installs', () => {
   const src = require('node:fs').readFileSync(require.resolve('../strapi-server.js'), 'utf8');
   const reg = src.slice(src.indexOf('register({ strapi })'));
-  const first = reg.indexOf("require('./server/compat/document-lock').install(strapi, cfg.documentServiceLock)");
+  const first = reg.indexOf("require('./server/compat/document-lock').install(strapi, cfg.documentServiceLock, cfg.staleFormGuard)");
   assert.ok(first > 0, 'installed in register()');
   for (const later of ['setVersionKey', 'compatCm.probe', 'interceptBuiltinTools', 'tools.register']) assert.ok(reg.indexOf(later) > first, `${later} comes after it`);
 });

@@ -1,5 +1,5 @@
 """Shared fixtures for the spike tests: page creation, reads, SQLite inspection (read-only)."""
-import json, os, sqlite3, sys
+import json, os, re, sqlite3, sys
 sys.path.insert(0, os.path.dirname(__file__))
 import spike
 
@@ -12,6 +12,18 @@ CMP_TABLE = {"shared.item": "components_shared_items", "shared.seo": "components
 PG = os.environ.get("SPIKE_PG")  # "host:port:db:user" ; password from .secrets/pg.json
 
 
+def pg_exec_env():
+    """`docker exec` options that point psql at the app's Postgres schema (connection.schema, from SPIKE_PG_SCHEMA or
+    DATABASE_SCHEMA): the helpers' unqualified table names then resolve where Strapi created the tables, as its own
+    queries do. Nothing for the default schema."""
+    s = os.environ.get("SPIKE_PG_SCHEMA") or os.environ.get("DATABASE_SCHEMA") or ""
+    if not s or s == "public":
+        return []
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$", s):
+        raise ValueError("unexpected Postgres schema name: %r" % s)
+    return ["-e", "PGOPTIONS=-c search_path=%s,public" % s]
+
+
 class _PgConn:
     """Minimal read-only adapter so the sqlite-style helpers also work against Postgres (via psql in the container)."""
     def __enter__(self): return self
@@ -21,7 +33,7 @@ class _PgConn:
         q = sql.replace('"order"', '"order"')
         for p in params:
             q = q.replace("?", ("'%s'" % str(p).replace("'", "''")) if isinstance(p, str) else str(p), 1)
-        out = subprocess.run(["docker", "exec", os.environ.get("SPIKE_PG_CONTAINER", "isokron-strapi-spike-2026-11-pg"), "psql", "-U",
+        out = subprocess.run(["docker", "exec", *pg_exec_env(), os.environ.get("SPIKE_PG_CONTAINER", "isokron-strapi-spike-2026-11-pg"), "psql", "-U",
                               os.environ.get("SPIKE_PG_USER", "postgres"), "-d", os.environ.get("SPIKE_DB_NAME", "strapi"), "-At", "-F", "\t", "-c", q],
                              capture_output=True, text=True, check=True).stdout
         rows = [tuple(int(x) if x.lstrip("-").isdigit() else x for x in l.split("\t")) for l in out.splitlines() if l]

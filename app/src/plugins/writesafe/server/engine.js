@@ -211,7 +211,7 @@ function preconditionFields(fields, attrs, nested = []) {
 }
 
 /**
- * expected_version must be a version token from ws_get ("v2.<mac>", 1.0 hardening item 15).
+ * expected_version must be a version token from ws_get ("v3.<mac>", 1.0 hardening item 15; the content revision since D1).
  * - A bare updatedAt (what get_<type> and REST return) is refused (item 3): it skipped the content check, and a write
  *   built from a built-in read is usually a whole-list copy without row keys.
  * - A token of 1.0.0-rc.2 or the Phase 1 builds ("<updatedAt>~<hash>") is refused as version_format
@@ -223,11 +223,18 @@ function assertVersion(v, name = 'expected_version') {
   if (M.isLegacyVersionToken(v)) {
     throw new WsError({
       code: 'version_format', field: name, requires_reread: true, retryable: false,
-      message: `${name} has the version format of writesafe 1.0.0-rc.2 ("<updatedAt>~<hash>"), which this version no longer accepts. Read the document again with ws_get and send its new \`version\` ("v2.…"). Nothing was written.`,
+      message: `${name} has the version format of writesafe 1.0.0-rc.2 ("<updatedAt>~<hash>"), which this version no longer accepts. Read the document again with ws_get and send its new \`version\` ("v3.…"). Nothing was written.`,
+    });
+  }
+  if (typeof v === 'string' && /^v2\.[A-Za-z0-9_-]{43}$/.test(v)) {
+    // a content-only token from before the content revision was bound in (D1): stale by format, not by a change
+    throw new WsError({
+      code: 'version_format', field: name, requires_reread: true, retryable: false,
+      message: `${name} is a version token from before writesafe bound the draft's content revision into its versions ("v2.…"; an upgrade, or another server of a rolling deploy). The document may not have changed. Read it again with ws_get and send its current \`version\` ("v3.…"). Nothing was written.`,
     });
   }
   if (typeof v !== 'string' || !M.isVersionToken(v)) {
-    throw new WsError({ code: 'invalid', field: name, message: `${name} must be a \`version\` from ws_get ("v2.…"). A bare updatedAt is not accepted: read the document with ws_get and send its version.` });
+    throw new WsError({ code: 'invalid', field: name, message: `${name} must be a \`version\` from ws_get ("v3.…"). A bare updatedAt is not accepted: read the document with ws_get and send its version.` });
   }
 }
 
@@ -1261,10 +1268,11 @@ async function annotateReplay(strapi, tool, args, replay, implicit) {
   } else {
     out.current_version = await cur(args);
   }
-  // An implicit record matches on the request alone. Versions are content hashes, so a document that went A -> B -> A
-  // reads with the version of A again, and a NEW request built from that fresh read is byte-identical to the first one.
-  // Answering it with the stored success would report a change that is not in effect (MWS-RES-1). Replay only while
-  // the target still holds what the first write produced; otherwise refuse, saying nothing was written.
+  // An implicit record matches on the request alone. Since v3 tokens a draft that went A -> B -> A reads with a new
+  // token, but some requests stay byte-identical after a change: an if_match precondition is a value, publish state is
+  // not part of the draft's token (the same ws_publish after an unpublish), and a late retry. Answering one with the
+  // stored success would report a change that is not in effect (MWS-RES-1). Replay only while the target still holds
+  // what the first write produced; otherwise refuse, saying nothing was written.
   if (implicit) {
     const now = { current_version: out.current_version, current_versions: out.current_versions };
     // a publish produced a live version, not a draft version: compare the live one

@@ -8,6 +8,10 @@
  *   POST /api/probe/raw-component {component, id, set}                       -> knex update of one component row
  *   POST /api/probe/raw-max-id {component}                                   -> highest id in a component table
  *   POST /api/probe/lock-stats {}                                            -> writesafe's lock counters (document-lock.js, db.js)
+ *                                                                              and the stale form guard's (stale-form.js)
+ *   POST /api/probe/x4-gate {arm, dir} | {disarm}                            -> hold the next agent write before its commit
+ *                                                                              (barrier-ordered stale form tests)
+ *   POST /api/probe/stale-prune {hours}                                      -> prune the stale form journal now
  *   POST /api/probe/recorder {reset?}                                        -> Document Service middleware calls and
  *                                                                              db lifecycle events seen (writesafe phase 2 C)
  *   POST /api/probe/fail-next {uid, action?}                                 -> the next db lifecycle `action` (default beforeCreate) of uid throws
@@ -123,7 +127,37 @@ const controller = ({ strapi }) => ({
     const DL = wsModule('server/compat/document-lock.js');
     const DB = wsModule('server/compat/db.js');
     if (!DL || !DB) return ctx.badRequest('writesafe modules not found');
-    ctx.body = { ok: true, client: DB.clientOf(strapi), state: DL.state, middleware: { ...DL.stats, recent: DL.stats.recent.slice(-100) }, engine: DB.stats, coverage };
+    const SF = wsModule('server/compat/stale-form.js');
+    ctx.body = { ok: true, client: DB.clientOf(strapi), state: DL.state, middleware: { ...DL.stats, recent: DL.stats.recent.slice(-100) }, engine: DB.stats, coverage,
+      staleForm: SF ? { state: SF.state, stats: SF.stats } : null };
+  },
+  // bench X4 (stale form guard): hold the next agent write open inside its transaction, after it wrote and before its
+  // commit, until released: {arm: true} -> {release: true}; {} reports whether a write is waiting at the gate
+  // {arm: true, dir}: the gate writes <dir>/waiting when a write reaches it and waits for <dir>/release (files, so a
+  // test can watch and open the gate while the write holds SQLite's only connection, which the token check needs)
+  async x4Gate(ctx) {
+    const SF = wsModule('server/compat/stale-form.js');
+    if (!SF) return ctx.badRequest('writesafe modules not found');
+    const b = ctx.request.body || {};
+    const fs = require('fs');
+    if (b.arm && typeof b.dir === 'string' && path.isAbsolute(b.dir)) {
+      const dir = b.dir;
+      SF.hooks.beforeAgentCommit = async () => {
+        SF.hooks.beforeAgentCommit = null; // one write only
+        fs.writeFileSync(path.join(dir, 'waiting'), String(Date.now()));
+        for (let i = 0; i < 600 && !fs.existsSync(path.join(dir, 'release')); i += 1) await new Promise((r) => setTimeout(r, 50));
+      };
+    }
+    if (b.disarm) SF.hooks.beforeAgentCommit = null;
+    ctx.body = { ok: true, armed: Boolean(SF.hooks.beforeAgentCommit) };
+  },
+  // stale form guard retention: prune journal entries older than `hours` now (tests use a tiny value)
+  async stalePrune(ctx) {
+    const SF = wsModule('server/compat/stale-form.js');
+    if (!SF) return ctx.badRequest('writesafe modules not found');
+    const h = Number((ctx.request.body || {}).hours);
+    if (!(h > 0)) return ctx.badRequest('hours > 0');
+    ctx.body = { ok: true, pruned: await SF.prune(strapi, h) };
   },
   async baseVersionCalls(ctx) {
     ctx.body = { ok: true, stub: process.env.PROBE_BASEVERSION_STUB === 'true', calls: bvCalls.slice(-50) };
@@ -264,6 +298,8 @@ module.exports = {
         { method: 'POST', path: '/raw-max-id', handler: 'probe.rawMaxId', config: { policies: [] } },
         { method: 'POST', path: '/base-version-calls', handler: 'probe.baseVersionCalls', config: { policies: [] } },
         { method: 'POST', path: '/lock-stats', handler: 'probe.lockStats', config: { policies: [] } },
+        { method: 'POST', path: '/x4-gate', handler: 'probe.x4Gate', config: { policies: [] } },
+        { method: 'POST', path: '/stale-prune', handler: 'probe.stalePrune', config: { policies: [] } },
         { method: 'POST', path: '/recorder', handler: 'probe.recorder', config: { policies: [] } },
         { method: 'POST', path: '/fail-next', handler: 'probe.failNext', config: { policies: [] } },
         { method: 'POST', path: '/lifecycle-counts', handler: 'probe.lifecycleCounts', config: { policies: [] } },

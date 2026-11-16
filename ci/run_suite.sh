@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs every functional suite against one prepared app (ci/prepare_app.sh) and one database, with every module on:
 # tests/test_plugin.py (core), test_media.py, test_l10n_history.py, test_bulk_create.py, test_locking.py (lock order),
+# test_stale_form.py (bench X4: a stale admin form is refused, also after a restart), test_stale_form_review.py (its
+# second review's checks: D1 through if_match and publish, a restricted editor, a second Save after a merge),
 # test_versions_keys.py (versions and keys), test_phase2_c.py (modules); then tests/test_mcp_probe.py once per
 # builtinUpdates mode (Strapi restarted per mode) and scripts/compat_check.mjs, both of which fail the run on a failed
 # probe (hardening phase 2, item 13); then tests/test_phase4d.py in three restarts (phase 4: ws_find, allowForce,
@@ -155,7 +157,8 @@ node scripts/setup_tokens.mjs && node scripts/setup_restricted_tokens.mjs && nod
 
 # 4. the suite
 case "$DB" in
-  postgres) export SPIKE_PG=1 SPIKE_PG_CONTAINER="${DB_CONTAINER:?DB_CONTAINER}" SPIKE_PG_USER="$DB_USER" SPIKE_DB_NAME="${DB_NAME:-strapi}" ;;
+  # SPIKE_PG_SCHEMA: the app's connection.schema (DATABASE_SCHEMA), so the suites' SQL helpers name it (spike/common.py)
+  postgres) export SPIKE_PG=1 SPIKE_PG_CONTAINER="${DB_CONTAINER:?DB_CONTAINER}" SPIKE_PG_USER="$DB_USER" SPIKE_DB_NAME="${DB_NAME:-strapi}" SPIKE_PG_SCHEMA="${DATABASE_SCHEMA:-}" ;;
   mysql) export SPIKE_MYSQL=1 SPIKE_MYSQL_CONTAINER="${DB_CONTAINER:?DB_CONTAINER}" SPIKE_MYSQL_USER="$DB_USER" SPIKE_DB_NAME="${DB_NAME:-strapi}" SPIKE_MYSQL_SECRET="$WORK/secrets/mysql.json" ;;
   sqlite) export SPIKE_SQLITE_DB="$APP_DIR/.tmp/data.db" ;;
 esac
@@ -199,7 +202,7 @@ FIRST=1
 # Phase 4 (tests/test_phase4_rest.py: ws_job, publish "if_clean", if_match): the suite's config, then a fresh Strapi with
 # approvals on (escalate.publish, adminTokens mcp-only), where a ws_bulk patch with publish "if_clean" waits for an admin.
 P4R_APPROVALS='{"automaticMax":4,"twoApproverAbove":8,"maxDocuments":30,"pendingPerToken":20,"samples":3,"approverQuietHours":0,"escalate":{"publish":true}}'
-for SUITE in ${SUITES:-test_plugin test_media test_l10n_history test_bulk_create test_locking test_versions_keys test_phase2_c test_undo_refops test_jobs_approval test_phase4_rest}; do
+for SUITE in ${SUITES:-test_plugin test_media test_l10n_history test_bulk_create test_locking test_versions_keys test_phase2_c test_undo_refops test_stale_form test_stale_form_review test_jobs_approval test_phase4_rest}; do
   SNAME=${SUITE//\//_}
   if [ "$SUITE" = test_phase4_rest ]; then
     if [ "$FIRST" != 1 ]; then cd "$APP_DIR"; stop; start; cd "$ROOT"; fi
@@ -226,14 +229,15 @@ for SUITE in ${SUITES:-test_plugin test_media test_l10n_history test_bulk_create
     if [ "$FIRST" != 1 ]; then cd "$APP_DIR"; stop; start; cd "$ROOT"; fi
     FIRST=0
     # tests/test_undo_refops.py kills Strapi in the middle of an undo job and starts it again (stream F)
-    if [ "$SUITE" = test_undo_refops ]; then
+    # tests/test_stale_form.py restarts Strapi between an agent's write and a stale Save (the markers are in the database)
+    if [ "$SUITE" = test_undo_refops ] || [ "$SUITE" = test_stale_form ]; then
       write_restart; echo "$SPID" > "$WORK/strapi.pid"
       export WS_RESTART_CMD="$WORK/restart-strapi.sh" WS_PID_FILE="$WORK/strapi.pid"
     fi
     TEST_RESULTS="$OUT_JSON" python3 tests/$SUITE.py > "$WORK/suite-$DB-$SNAME.txt" 2>&1
     R=$?
     # a suite that restarted Strapi left the new pid in the pid file: stop() must stop that one
-    if [ "$SUITE" = test_undo_refops ] && [ -s "$WORK/strapi.pid" ]; then SPID=$(cat "$WORK/strapi.pid"); fi
+    if { [ "$SUITE" = test_undo_refops ] || [ "$SUITE" = test_stale_form ]; } && [ -s "$WORK/strapi.pid" ]; then SPID=$(cat "$WORK/strapi.pid"); fi
   fi
   [ $R -ne 0 ] && RC=$R
   LINE=$(grep -E 'passed, [0-9]+ failed' "$WORK/suite-$DB-$SNAME.txt" | tail -1)
@@ -310,7 +314,7 @@ cat "$WORK"/suite-$DB-*.txt > "$WORK/suite-$DB.txt"
 # per-check results of the module suites, next to test_plugin's OUT_JSON (uploaded as CI artifacts)
 for F in tests/results/test_media-"$DB"*.json tests/results/test_l10n_history_"$DB".json tests/results/test_bulk_create-"$DB".json tests/results/test_locking-"$DB".json \
   tests/results/test_versions_keys-"$DB".json tests/results/test_row_key_import-"$DB".json tests/results/test_phase2_c-"$DB".json tests/results/test_mcp_probe-"$DB"-*.json \
-  tests/results/test_undo_refops-"$DB".json tests/results/test_phase4_rest-*-"$DB".json; do
+  tests/results/test_undo_refops-"$DB".json tests/results/test_stale_form-"$DB".json tests/results/test_phase4_rest-*-"$DB".json; do
   [ -f "$F" ] && cp "$F" "$(dirname "$OUT_JSON")/$(basename "${OUT_JSON%.json}")-$(basename "$F")"
 done
 echo "all suites: $PASS passed, $FAIL failed"

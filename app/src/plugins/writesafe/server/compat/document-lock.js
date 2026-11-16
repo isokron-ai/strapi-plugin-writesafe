@@ -8,6 +8,10 @@
 const C = require('./index');
 const DB = require('./db');
 const CO = require('./custom-order');
+const SF = require('./stale-form');
+
+/** Is the running Document Service call a writesafe write (inside engine.runWrite's attempt)? */
+const isAgentWrite = () => { const E = require('../engine'); return Boolean(typeof E.attemptState === 'function' && E.attemptState()); };
 
 // Actions that write an existing document's rows (@strapi/core 5.47-5.62); create and clone have no row to lock.
 const ACTIONS = new Set(['update', 'delete', 'publish', 'unpublish', 'discardDraft']);
@@ -36,19 +40,30 @@ function middleware(strapi) {
     if (!ctx || !ACTIONS.has(ctx.action)) return next();
     stats.calls += 1;
     if (sqlite === null) { sqlite = DB.isSqlite(strapi); pg = /postgres|^pg$/i.test(String(DB.clientOf(strapi))); }
-    if (sqlite) { stats.sqlite += 1; return next(); }
     const uid = ctx.uid || ctx.contentType?.uid;
     const documentId = ctx.params && ctx.params.documentId;
+    if (sqlite) {
+      stats.sqlite += 1;
+      // SQLite takes no row lock: it runs one writer at a time, so the stale form guard and the revision counter
+      // (stale-form.js) only need the write's own transaction
+      if (!SF.tracking() || !['update', 'discardDraft', 'delete'].includes(ctx.action) || !uid || typeof documentId !== 'string' || !documentId) return next();
+      if (!writable) writable = new Set(require('../engine').writableUids(strapi));
+      if (!writable.has(uid)) return next();
+      const agent = isAgentWrite();
+      return strapi.db.transaction(async ({ trx }) => SF.around(strapi, trx, ctx, uid, documentId, agent, next));
+    }
     if (!writable) writable = new Set(require('../engine').writableUids(strapi));
     if (!uid || typeof documentId !== 'string' || !documentId || !writable.has(uid)) { stats.skipped += 1; return next(); }
     const owner = !(typeof strapi.db.inTransaction === 'function' && strapi.db.inTransaction());
+    const agent = isAgentWrite();
     CO.enabled(strapi, uid); // starts custom order's stale-settings refresh outside the transaction (docs/locking.md)
     const orderFirst = ctx.action === 'update' && await CO.updateMayCreateRow(strapi, uid, documentId, ctx.params.locale);
     return strapi.db.transaction(async ({ trx }) => {
       if (DB.holds(trx, uid, documentId)) {
         stats.alreadyHeld += 1;
         record({ action: ctx.action, uid, documentId, held: true, waitMs: 0 });
-        return next();
+        // the stale form guard: the agent's journal, in the agent's transaction before its commit (stale-form.js)
+        return SF.around(strapi, trx, ctx, uid, documentId, agent, next);
       }
       const t0 = Date.now();
       let rows;
@@ -64,7 +79,9 @@ function middleware(strapi) {
       if (waitMs > stats.waitMsMax) stats.waitMsMax = waitMs;
       if (trx && rows.length) lockedTrx.add(trx);
       record({ action: ctx.action, uid, documentId, held: false, waitMs, rows: rows.length, ...(rows.changed ? { changed: true } : {}), ...(orderFirst ? { orderFirst: true } : {}) });
-      const result = await next();
+      // The stale form guard (bench X4), under the lock: an agent write that committed while this Save waited is in the
+      // journal; the guard's reads are locking reads (stale-form.js)
+      const result = await SF.around(strapi, trx, ctx, uid, documentId, agent, next);
       if (pg && owner && trx) await trx.raw('select 1');
       return result;
     });
@@ -72,7 +89,7 @@ function middleware(strapi) {
 }
 
 /** Register the middleware; true when registered. */
-function install(strapi, enabled) {
+function install(strapi, enabled, staleFormGuard = false) {
   if (!enabled) {
     state.reason = 'off (config documentServiceLock: false)';
     C.note('db.document_service_lock', true, state.reason);
@@ -85,6 +102,9 @@ function install(strapi, enabled) {
     return false;
   }
   strapi.documents.use(middleware(strapi));
+  // the revision counter (the version token binds it) and the stale admin form guard need this lock (they run under
+  // it); both are off with documentServiceLock: false
+  SF.install(strapi, staleFormGuard);
   state.installed = true;
   state.reason = `registered for ${[...ACTIONS].join(', ')}`;
   C.note('db.document_service_lock', true, state.reason);

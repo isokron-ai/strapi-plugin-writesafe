@@ -24,7 +24,7 @@ NONCE = str(int(time.time()))
 results = []
 CURRENT = [None]
 ONLY = [x for x in os.environ.get("ONLY", "").split(",") if x]
-V2 = re.compile(r"^v2\.[A-Za-z0-9_-]{43}$")
+V2 = re.compile(r"^v3\.[A-Za-z0-9_-]{43}$")  # v3 since D1 (the content revision is bound in)
 KEY = re.compile(r"^[a-z0-9-]+\.[a-z0-9-]+:\d+:[A-Za-z0-9_-]{22}$")
 
 
@@ -88,7 +88,7 @@ def sql(q):
                              env=dict(os.environ, MYSQL_PWD=pw), capture_output=True, text=True, check=True).stdout
         return [l.split("\t") for l in out.splitlines() if l]
     if os.environ.get("SPIKE_PG"):
-        out = subprocess.run(["docker", "exec", os.environ["SPIKE_PG_CONTAINER"], "psql", "-U", os.environ.get("SPIKE_PG_USER", "postgres"), "-d", os.environ.get("SPIKE_DB_NAME", "strapi"), "-At", "-F", "\t", "-c", q],
+        out = subprocess.run(["docker", "exec", *common.pg_exec_env(), os.environ["SPIKE_PG_CONTAINER"], "psql", "-U", os.environ.get("SPIKE_PG_USER", "postgres"), "-d", os.environ.get("SPIKE_DB_NAME", "strapi"), "-At", "-F", "\t", "-c", q],
                              capture_output=True, text=True, check=True).stdout
         return [l.split("\t") for l in out.splitlines() if l]
     c = sqlite3.connect(common.DB, timeout=30)
@@ -133,7 +133,7 @@ def items_of(doc):
 def t15_token_format():
     doc = new_page("fmt")
     g = wget(PAGE, doc)
-    check("15: ws_get returns a v2 version token (\"v2.\" + 43 base64url characters, a full-length HMAC)", bool(V2.match(g["version"])), g["version"])
+    check("15: ws_get returns a v3 version token (\"v3.\" + 43 base64url characters, a full-length HMAC)", bool(V2.match(g["version"])), g["version"])
     e, r = ws("ws_patch", {"uid": PAGE, "documentId": doc, "expected_version": g["version"], "set": {"note": "fmt"}})
     check("15: receipts carry v2 tokens", not e and V2.match(r.get("version", "")) and r.get("previous_version") == g["version"], r)
 
@@ -600,14 +600,17 @@ def tn1_replay_says_how_to_apply_again():
     check("N1: the refused replay carries current_version, the receipt and the way to apply it again on purpose (idempotency_key)",
           e2 and code(r2) == "replay_superseded" and err_of(r2).get("current_version") == cur and err_of(r2).get("receipt_id") == r1.get("receipt_id")
           and "idempotency_key" in (err_of(r2).get("message") or ""), r2)
-    e3, r3 = ws("ws_patch", {**req, "idempotency_key": "tn1-again-" + NONCE})
-    check("N1: with an idempotency_key the same change applies again", not e3 and not r3.get("replayed") and common.rest_get(RA, doc)["note"] == "agent", r3)
+    # the undo was a write: since v3 tokens (D1) the old token is stale (a re-read gives the current one), even though
+    # the content is back where it was
+    e3, r3 = ws("ws_patch", {**req, "expected_version": cur, "idempotency_key": "tn1-again-" + NONCE})
+    check("N1: with an idempotency_key (and the current version) the same change applies again", not e3 and not r3.get("replayed") and common.rest_get(RA, doc)["note"] == "agent", r3)
 
 
 @T
 def tsd1_aba_fresh_request_is_not_a_false_success():
-    """MWS self-test D1 (MWS-RES-1): A sets review, B sets draft (the document is back at A's first version), A reads
-    again and sends the same request. It must not be answered ok with nothing applied."""
+    """MWS self-test D1 (MWS-RES-1): A sets review, B sets draft (the content is back at A's first read), A reads again.
+    Since v3 tokens the re-read gives a new token, so A's fresh request is a new request and applies; A's first
+    request sent again (a late retry) must not be answered ok with nothing applied."""
     doc = new_page("sd1")
     common.rest_put(RB, doc, {"note": "draft"})
     v0 = wget(PAGE, doc)["version"]
@@ -619,12 +622,18 @@ def tsd1_aba_fresh_request_is_not_a_false_success():
     e, b = ws("ws_patch", {"uid": PAGE, "documentId": doc, "expected_version": r1["version"], "set": {"note": "draft"}}, B)
     check("D1 setup: B sets draft", not e and common.rest_get(RA, doc)["note"] == "draft", b)
     v0b = wget(PAGE, doc)["version"]
-    check("D1 setup: the re-read gives the first version again (content-hash versions)", v0b == v0, [v0, v0b])
+    check("D1 (v3): the re-read after A -> B -> A gives a new token, not the first one", v0b != v0, [v0, v0b])
     e3, r3 = ws("ws_patch", req)
     note = common.rest_get(RA, doc)["note"]
-    check("D1: the identical fresh request is refused (replay_superseded, isError), not answered ok; nothing written",
+    check("D1: the first request sent again is refused (replay_superseded, isError), not answered ok; nothing written",
           e3 and code(r3) == "replay_superseded" and not r3.get("ok") and err_of(r3).get("produced_version") == r1.get("version")
-          and err_of(r3).get("current_version") == v0 and note == "draft", [r3, note])
+          and err_of(r3).get("current_version") == v0b and note == "draft", [r3, note])
+    req = dict(req, expected_version=v0b)
+    ef, rf = ws("ws_patch", req)
+    check("D1 (v3): the fresh request built from the re-read (new token, no idempotency_key) is a new request: applied, not replayed",
+          not ef and not rf.get("replayed") and common.rest_get(RA, doc)["note"] == "review", rf)
+    common.rest_put(RB, doc, {"note": "draft"})
+    req = dict(req, expected_version=wget(PAGE, doc)["version"])
     e4, r4 = ws("ws_patch", {**req, "idempotency_key": "sd1-" + NONCE})
     check("D1: resent with an idempotency_key, the change applies", not e4 and not r4.get("replayed") and common.rest_get(RA, doc)["note"] == "review", r4)
     e5, r5 = ws("ws_patch", {**req, "idempotency_key": "sd1-" + NONCE})
@@ -635,25 +644,27 @@ def tsd1_aba_fresh_request_is_not_a_false_success():
 def tsd1_batch_and_delete_after_aba():
     """MWS self-test D1 for ws_batch (a chain of two patch items on one document) and ws_delete."""
     d1 = new_page("sd1-b")
-    v0 = wget(PAGE, d1)["version"]
+    g0 = wget(PAGE, d1)
+    v0, n0 = g0["version"], g0["data"]["note"]
     batch = {"items": [{"uid": PAGE, "documentId": d1, "expected_version": v0, "set": {"note": "b-one"}},
                        {"uid": PAGE, "documentId": d1, "set": {"note": "b-two"}}]}
     e1, r1 = ws("ws_batch", batch)
     e2, r2 = ws("ws_batch", batch)
     check("D1 batch: a plain retry of a chained batch (two items, one document) replays", not e1 and not e2 and r2.get("replayed") is True, [r1, r2])
     e, u = ws("ws_undo", {"receipt_id": r1.get("receipt_id")}, B)
-    check("D1 batch setup: a colleague undid the batch (back at the first version)", not e and wget(PAGE, d1)["version"] == v0, u)
+    vu = wget(PAGE, d1)
+    check("D1 batch setup: a colleague undid the batch (content back, a new v3 token)", not e and vu["data"]["note"] == n0 and vu["version"] != v0, [u, vu["data"]["note"], n0])
     e3, r3 = ws("ws_batch", batch)
     check("D1 batch: the same batch again is refused (replay_superseded), nothing written",
-          e3 and code(r3) == "replay_superseded" and len(err_of(r3).get("superseded_items") or []) == 2 and wget(PAGE, d1)["version"] == v0, r3)
+          e3 and code(r3) == "replay_superseded" and len(err_of(r3).get("superseded_items") or []) == 2 and wget(PAGE, d1)["version"] == vu["version"], r3)
     d3 = new_page("sd1-del")
     req = {"uid": PAGE, "documentId": d3, "expected_version": wget(PAGE, d3)["version"]}
     e1, r1 = ws("ws_delete", req)
     e, u = ws("ws_undo", {"receipt_id": r1.get("receipt_id")}, B)
     eg, g = ws("ws_get", {"uid": PAGE, "documentId": d3})
     check("D1 delete setup: the colleague's undo restored the document (same documentId)", not e and not eg, [u, g])
-    # informational: the delete rule needs only the document to exist again, not the same version
-    check("D1 delete setup (info): the restored document reads with the version the delete named", not eg and g.get("version") == req["expected_version"], g)
+    # since v3 tokens a delete moves the content revision, so the restored document reads with a new token
+    check("D1 delete setup (v3): the restored document reads with a new token, not the one the delete named", not eg and g.get("version") != req["expected_version"], g)
     e2, r2 = ws("ws_delete", req)
     eg2, g2 = ws("ws_get", {"uid": PAGE, "documentId": d3})
     check("D1 delete: the same delete again is refused (replay_superseded), not answered deleted: true; the document stays",
@@ -668,8 +679,11 @@ def tn1_implicit_claims_expire_after_minutes():
     e, u = ws("ws_undo", {"receipt_id": r1.get("receipt_id")}, B)
     backdate_claim(r1.get("receipt_id"), 11)          # older than retention.implicitClaimMinutes (10)
     e2, r2 = ws("ws_patch", req)
-    check("N1: an implicit claim older than implicitClaimMinutes no longer replays: a deliberate re-run writes",
-          not e and not e2 and not r2.get("replayed") and common.rest_get(RA, doc)["note"] == "agent", [u, r2])
+    # D1: the old token no longer matches after the change and its undo (A -> B -> A), so the re-run is a conflict
+    check("N1: an implicit claim older than implicitClaimMinutes no longer replays; the old token is stale since D1 (version_conflict)",
+          not e and e2 and (r2.get("error") or {}).get("code") == "version_conflict", [u, r2])
+    e4, r4 = ws("ws_patch", {**req, "expected_version": wget(PAGE, doc)["version"]})
+    check("N1: a deliberate re-run from a fresh read writes", not e4 and not r4.get("replayed") and common.rest_get(RA, doc)["note"] == "agent", r4)
 
 
 @T

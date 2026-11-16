@@ -65,7 +65,7 @@ def t_get_and_scalar_patch():
     doc = common.create_page_mcp("tp-scalar")
     items0 = common.cmp_rows(doc, "items")
     g = get(doc)
-    check("ws_get returns version and row keys", g["version"].startswith("v2.") and len(g["rows"]["items"]) == 3, g)
+    check("ws_get returns version and row keys", g["version"].startswith("v3.") and len(g["rows"]["items"]) == 3, g)
     err, r, n = ws("ws_patch", {"uid": UID, "documentId": doc, "expected_version": g["version"], "set": {"note": "x"}})
     check("scalar patch ok", not err and r["ok"] and r["changed"] == ["note"], r)
     check("receipt is compact (structured receipt < 300 bytes)", len(json.dumps(r, separators=(",", ":"))) < 300, len(json.dumps(r, separators=(",", ":"))))
@@ -82,7 +82,7 @@ def t_conflict_structure():
     err, r, n = ws("ws_patch", {"uid": UID, "documentId": doc, "expected_version": g["version"], "set": {"note": "agent"}})
     e = (r or {}).get("error", {})
     check("stale write refused as version_conflict", err and e.get("code") == "version_conflict", r)
-    check("conflict carries current_version", e.get("current_version", "").startswith("v2."), e)
+    check("conflict carries current_version", e.get("current_version", "").startswith("v3."), e)
     check("conflict carries the current value of the touched field", e.get("current", {}).get("note") == "colleague", e)
     check("conflict carries a retry hint with the new expected_version", e.get("retry", {}).get("expected_version") == e.get("current_version"), e)
     check("nothing written on conflict", common.rest_get(RA, doc)["note"] == "colleague")
@@ -364,7 +364,7 @@ def t_hidden_version_oracle():
     common.rest_put(RB, doc, {"note": "approved"})
     full = get(doc)
     g = ws("ws_get", {"uid": UID, "documentId": doc}, NR)[1]
-    target = g["version"].split(".", 1)[1]   # v2 token: "v2.<mac>" (1.0 hardening item 15)
+    target = g["version"].split(".", 1)[1]   # v3 token: "v3.<mac>" (1.0 hardening item 15; D1: the content revision)
     raw = _raw_from_view(g["data"])
     raw["seo"]["metaDescription"] = None
     raw["items"] = []
@@ -537,7 +537,7 @@ def t_single_type():
     check("ws_patch does not create a single type", err and r["error"]["code"] == "not_found" and home_rest() is None, r)
     doc = home_reset()
     g = ws("ws_get", {"uid": HUID})[1]
-    check("ws_get without documentId reads the single type", g["documentId"] == doc and g["version"].startswith("v2.") and len(g["rows"]["sections"]) == 2, g)
+    check("ws_get without documentId reads the single type", g["documentId"] == doc and g["version"].startswith("v3.") and len(g["rows"]["sections"]) == 2, g)
     check("ws_get with its documentId gives the same version", gget(doc, uid=HUID)["version"] == g["version"])
     err, r, _ = ws("ws_get", {"uid": HUID, "documentId": "not-the-one"})
     check("ws_get with another documentId -> not_found", err and r["error"]["code"] == "not_found", r)

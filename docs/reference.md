@@ -291,7 +291,9 @@ The codes are:
   edited that row since it was read, the key comes from another database (an import, a restore, a copy to staging) or
   an rc.2 read, or the id was reused. It never carries the row's new key: read again with `ws_get`.
 - `version_format` (1.0 hardening item 15): `expected_version` (or `expected_source_version`) has the rc.2 format
-  `<updatedAt>~<hash>`. Read again with `ws_get` for a `v2.` token.
+  `<updatedAt>~<hash>`, or is a `v2.` token from before the draft's content revision was bound into versions (an
+  upgrade, or a node of a rolling deploy not yet upgraded; the document may not have changed). Read again with
+  `ws_get` for a `v3.` token.
 - `precondition_required`: the call needs `expected_version` (`set` and `unset`, a publish, a delete, an existing
   ws_localize target). It carries no version (since the 1.0 hardening): a version
   handed out without the state it stands for would let an agent write without reading. Read with `ws_get`.
@@ -345,8 +347,10 @@ document.
   does not move the draft version); a batch whose version does not move does not run its other items twice; a
   localize that created a locale is answered with its receipt. Two identical requests at the same moment: one writes,
   the other gets its reply.
-- **`replay_superseded`** (MWS-RES-1; MWS self-test D1). Versions are content hashes, so a document that went
-  A -> B -> A reads with the version of A again, and a new request built from that read is byte-identical to the first.
+- **`replay_superseded`** (MWS-RES-1; MWS self-test D1). Since `v3.` tokens a draft that went A -> B -> A reads with a
+  new token, so a request built from a fresh read is a new request. Some requests are still identical after a change:
+  an `if_match` precondition is a value (true again after A -> B -> A), publish state is not part of the draft's token
+  (after an unpublish the same `ws_publish` is identical), and a late retry of a lost reply is identical by design.
   A replay therefore checks, inside the transaction, that the target still holds what the first write produced: a
   patch or a translation, the draft version in the reply (`version`; in a batch, the last version the batch left on
   that document); a publish (and a patch with `publish: "if_clean"` that published), the version of the live row,
@@ -354,6 +358,8 @@ document.
   the draft relates to a target that is only a draft); a delete, that every deleted locale is still gone. If not (someone undid or changed it, unpublished, restored the document), the request is refused with
   `replay_superseded` (`requires_reread`, nothing written) instead of a success that is not in effect. It names
   `receipt_id`, `produced_version` and `current_version` (for a batch, `superseded_items` and `current_versions`).
+  A publish's `live_version` is a v3 token, so it binds the draft's revision too: after any edit of the draft, a
+  plain retry of the same `ws_publish` is refused with `replay_superseded` even though the live row did not change.
   Nothing is written over the other change: read again, check whether your change is still there, and only if it is
   still wanted send it with an `idempotency_key`. Any later write to the document counts as a change, so a late retry
   after an unrelated edit is refused too; and without `APP_KEYS` versions change on every restart, so a retry across

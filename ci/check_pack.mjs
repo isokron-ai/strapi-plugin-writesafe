@@ -34,8 +34,9 @@ const unpacked = info.unpackedSize;
 // stream E (the bulk job store, plan tokens and their docs), ~830 kB with phase 3 stream F (undo jobs, ref ops). The cap
 // catches fixtures or build output slipping in.
 // ~887 kB after the pre-launch trim and phase 4 (long code comments moved to the unshipped docs/internals.md), ~921 kB
-// with the admin settings page. Cap 1 MB: it is almost all server code.
-if (unpacked > 1_000_000) problems.push(`unpacked size ${unpacked} B is over 1 MB`);
+// with the admin settings page, ~941 kB with the self-test fixes, ~1.02 MB with the stale admin form guard (X4: its
+// server, rebase and admin code) and v3 tokens. Cap 1.1 MB: it is almost all server code.
+if (unpacked > 1_100_000) problems.push(`unpacked size ${unpacked} B is over 1.1 MB`);
 
 console.log(`${info.name}@${info.version}: ${info.files.length} files, ${info.size} B packed, ${unpacked} B unpacked`);
 for (const f of info.files) console.log(`  ${String(f.size).padStart(7)}  ${f.path}`);

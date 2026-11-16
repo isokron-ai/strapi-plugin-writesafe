@@ -121,6 +121,13 @@ const VERSION_TABLE = [
     tested: ['5.47.1', '5.51.2', '5.62.0'],
   },
   {
+    feature: 'admin.stale_form_guard',
+    adapter: 'compat/stale-form.js, admin/form-base.mjs',
+    uses: "strapi.requestContext.get() inside a Document Service middleware (method, path, ctx.state.user of the Content Manager request); the Content Manager's entry URLs (findOne, update, publish, discard, unpublish) and the admin's global fetch (getFetchClient); an http-errors HttpError thrown from the middleware answers 409",
+    fallback: "staleFormGuard: false gives Strapi's behaviour; a Save without the admin's base header is refused (409) once the entry has journal entries",
+    tested: ['5.62.0'],
+  },
+  {
     feature: 'documents.base_version',
     adapter: 'compat/base-version.js',
     uses: 'strapi.documents(uid).update({ baseVersion }) and errors.ConflictError (strapi/strapi#27506, not released)',

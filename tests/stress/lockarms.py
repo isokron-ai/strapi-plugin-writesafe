@@ -71,13 +71,36 @@ def admin_jwt():
     return _JWT[0]
 
 
-def admin_http(method, path, body=None, timeout=120):
+# The stale form guard (bench X4): the admin panel echoes the version each edit form was loaded at (X-Writesafe-Version
+# on the load, X-Writesafe-Base on Save, publish and discard; admin/form-base.mjs). This client does the same, as one tab.
+VERSIONS = {}
+_CM_ENTRY = re.compile(r"^/content-manager/(?:collection-types/([^/?]+)/([^/?]+)|single-types/([^/?]+))(?:/actions/([^/?]+))?/?(?:\?(.*))?$")
+
+
+def _entry(path):
+    m = _CM_ENTRY.match(path)
+    if not m or m.group(2) == "actions":
+        return None, None, {}
+    q = dict(x.split("=", 1) for x in (m.group(5) or "").split("&") if "=" in x)
+    return "%s|%s|%s" % (m.group(1) or m.group(3), m.group(2) or "", q.get("locale", "")), m.group(4), q
+
+
+def admin_http(method, path, body=None, timeout=120, versions=None, echo=True):
+    vers = VERSIONS if versions is None else versions
+    key, action, q = _entry(path)
     h = {"Authorization": "Bearer " + admin_jwt(), "Accept": "application/json"}
     if body is not None:
         h["Content-Type"] = "application/json"
+    sends = key and ((method == "PUT" and not action) or (method == "POST" and action in ("publish", "discard", "unpublish")))
+    if echo and sends and key in vers:
+        h["X-Writesafe-Base"] = vers[key]
     req = urllib.request.Request(spike.BASE + path, data=json.dumps(body).encode() if body is not None else None, headers=h, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            v = r.headers.get("X-Writesafe-Version")
+            # as admin/form-base.mjs: a merged Save's answer never moves the base (R2-S2); the next load does
+            if key and v and ((method == "GET" and not action and q.get("status") != "published") or (sends and not r.headers.get("X-Writesafe-Merged"))):
+                vers[key] = v
             return r.status, json.loads(r.read() or b"null")
     except urllib.error.HTTPError as e:
         raw = e.read()
@@ -89,6 +112,12 @@ def admin_http(method, path, body=None, timeout=120):
 
 def cm_path(uid, doc, locale=None, action=None):
     return "/content-manager/collection-types/%s/%s%s%s" % (uid, doc, "/actions/" + action if action else "", "?locale=" + locale if locale else "")
+
+
+def stale_reason(st, b):
+    """The stale form guard's 409 (bench X4): its reason, else None."""
+    d = (((b or {}).get("error") or {}).get("details") or {}) if isinstance(b, dict) else {}
+    return d.get("reason") if st == 409 and d.get("code") == "stale_form" else None
 
 
 def err_text(b):
@@ -200,7 +229,7 @@ def two_writers(mode, rounds, heavy=0, tag="lk"):
                 st, b = admin_http("POST", cm_path(PAGE, doc, action="publish"), body)
             else:
                 st, b = admin_http("PUT", cm_path(uid, doc, "en" if loc else None), body)
-            res["admin"] = {"status": st, "ms": round((time.time() - t0) * 1000), "error": None if st == 200 else err_text(b)}
+            res["admin"] = {"status": st, "ms": round((time.time() - t0) * 1000), "error": None if st == 200 else err_text(b), "stale": stale_reason(st, b)}
 
         def agent_args():
             if mode == "locale":
@@ -269,7 +298,11 @@ def aggregate_two(rounds, mode, heavy, secs):
         "arm": mode if not heavy else "heavy%d" % heavy, "db": DB_LABEL, "rounds": len(rounds), "seconds": round(secs),
         "deadlocks": sum(1 for x in rounds if deadlocked(x)),
         "admin_500": sum(1 for a in adm if a["status"] >= 500),
-        "admin_other_errors": sum(1 for a in adm if a["status"] != 200 and a["status"] < 500),
+        # the stale form guard's 409s (bench X4: a publish or discard with agent changes the form has not seen) are
+        # counted apart: they are the expected answer when the agent's write commits first
+        "admin_other_errors": sum(1 for a in adm if a["status"] != 200 and a["status"] < 500 and not a.get("stale")),
+        "admin_stale_409": sum(1 for a in adm if a.get("stale")),
+        "admin_stale_reasons": sorted({a["stale"] for a in adm if a.get("stale")}),
         "admin_error_messages": sorted({a["error"] for a in adm if a["status"] != 200}),
         "agent_errors": sum(1 for a in agt if not a["ok"]),
         "agent_error_codes": sorted({str(a["code"]) for a in agt if not a["ok"]}),
@@ -422,7 +455,7 @@ def discard_vs_patch(rounds, tag="lk"):
             time.sleep(d_admin)
             t0 = time.time()
             st, b = admin_http("POST", cm_path(PAGE, doc, action="discard"), {})
-            res["admin"] = {"status": st, "ms": round((time.time() - t0) * 1000), "error": None if st == 200 else err_text(b)}
+            res["admin"] = {"status": st, "ms": round((time.time() - t0) * 1000), "error": None if st == 200 else err_text(b), "stale": stale_reason(st, b)}
 
         def agent():
             bar.wait()
@@ -601,15 +634,21 @@ def writer(name, doc):
     if name == "raw_knex":
         st, b, _ = spike.http(RA, "POST", "/api/probe/raw-update", {"uid": PAGE, "documentId": doc, "set": {"summary": tag}}, log=False)
         return st == 200, st
+    # the publish, unpublish and discard buttons act on a loaded edit view: load it first (its version is the base)
     if name == "cm_publish":
+        admin_http("GET", cm_path(PAGE, doc))
         st, b = admin_http("POST", cm_path(PAGE, doc, action="publish"), {})
         return st == 200, st
     if name == "cm_unpublish":
+        admin_http("GET", cm_path(PAGE, doc))
         st, b = admin_http("POST", cm_path(PAGE, doc, action="unpublish"), {})
         return st == 200, st
     if name == "cm_discard":
+        admin_http("GET", cm_path(PAGE, doc))
         admin_http("POST", cm_path(PAGE, doc, action="publish"), {})
+        admin_http("GET", cm_path(PAGE, doc))
         admin_http("PUT", cm_path(PAGE, doc), {"summary": tag})
+        admin_http("GET", cm_path(PAGE, doc))
         st, b = admin_http("POST", cm_path(PAGE, doc, action="discard"), {})
         return st == 200, st
     if name == "cm_delete":

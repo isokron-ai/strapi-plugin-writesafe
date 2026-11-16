@@ -7,7 +7,8 @@
  * Design notes: docs/internals.md, section "server/retention.js".
  */
 const RECEIPT_UID = 'plugin::writesafe.receipt';
-const DEFAULTS = { keyHours: 72, jobHours: 72, claimMinutes: 60, implicitClaimMinutes: 10, pruneEverySeconds: 3600, longHorizonDays: 30 };
+// journalHours: the stale form guard's journal (compat/stale-form.js); an edit form open longer gets 409 base_too_old
+const DEFAULTS = { keyHours: 72, jobHours: 72, claimMinutes: 60, implicitClaimMinutes: 10, pruneEverySeconds: 3600, longHorizonDays: 30, journalHours: 72 };
 const BATCH = 500;
 const MAX_INTERVAL_S = 2147483; // floor((2^31 - 1) / 1000): the largest delay setInterval honours
 const CONTENT_KEYS = ['document', 'recreate', 'diff'];
@@ -143,6 +144,13 @@ async function prune(strapi) {
     } catch (e) {
       strapi.log.warn(`[writesafe] bulk job retention failed: ${e.message}`);
     }
+  }
+  // 5. the stale form guard's journal entries (compat/stale-form.js), retention.journalHours (72) after their write
+  try {
+    const n = await require('./compat/stale-form').prune(strapi);
+    if (n) out.stale_form_journal = n;
+  } catch (e) {
+    strapi.log.warn(`[writesafe] stale form retention failed: ${e.message}`);
   }
   return out;
 }

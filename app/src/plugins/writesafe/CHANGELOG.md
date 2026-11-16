@@ -22,6 +22,40 @@ the Upgrading notes below are complete.
   sent where a boolean, integer, object or array is declared (`"dry_run": "true"`, `"limit": "5"`, `"set": "{...}"`) is
   refused before the tool runs (`isError`, nothing written), naming the argument, the type and the value. The
   advertised schemas are unchanged. To opt back in: `lenientArgs: true`.
+- **(contract) Version tokens are `v3.`** (self-test D1): the token binds the draft's content revision (per document
+  and locale; it moves whenever a Document Service write changes that draft's content) as well as its content, so
+  after A → B → A (and after a delete and a re-create under the same documentId) an old token never matches again, so
+  a fresh write with a re-read token is not answered as a replay of an earlier one; an agent holding a token from
+  before a change and its undo must re-read. The `replay_superseded` check above stays: it covers the requests whose
+  key no revision can change (an `if_match` precondition is a value; publish state is not part of the draft's
+  revision, so after an unpublish the same `ws_publish` is the identical request). A `v2.` token from before the upgrade
+  (or from a not yet upgraded node of a rolling deploy) is refused with its own code, `version_format`
+  (`requires_reread`; the document may not have changed): read again; agents get these until every node runs this
+  version. New table `writesafe_content_rev`. Needs `documentServiceLock` (with it off,
+  the revision is 0 and tokens are content-only as before).
+- **Stale admin forms** (bench X4): an admin-panel Save whose form was loaded before an agent's write no longer writes
+  the form's old values over it behind a 200. New option `staleFormGuard` (default on; needs `documentServiceLock`;
+  new `retention.journalHours`, 72). **Behaviour change for sites that use the admin together with REST or GraphQL:**
+  an update or delete by REST, GraphQL, another plugin or review workflows leaves an opaque journal entry, so an admin
+  form loaded before it gets 409 on Save (Strapi answered 200, last write wins); the panel "Your unsaved edits" keeps
+  the editor's values. `staleFormGuard: { otherWriters: false }` restores last-write-wins for those writers.
+  Upgrading: agent writes made while the guard was off (or on an old node during a rolling deploy) are not
+  journaled, so a form loaded before them is not protected, and an old node does not move content revisions (an
+  A → B → A split across old and new nodes keeps its token); reload open admin tabs after deploying (an old admin
+  bundle sends no version: its Saves get 409 on any entry with a journal entry, and so do header-less clients of the
+  Content Manager routes, such as scripts, on any entry an agent, another writer or a discard changed, permanently).
+  Agent writes are journaled per field (new tables `writesafe_doc_rev`, `writesafe_journal`, created at start); the
+  edit view's load answers `X-Writesafe-Version`, the admin echoes it per tab (`X-Writesafe-Base`, the plugin's admin
+  code wraps `window.fetch`), and the Save is rebased on the current draft under the document's lock: merged (200,
+  with an `X-Writesafe-Merged` note), or 409 (`ConflictError`, `details.code: "stale_form"`) when both changed one
+  field or list, on edit against delete (also inside nested components), a publish or discard with unseen agent
+  changes, an agent's delete of the locale, a discard or another writer since the load, or a Save without the header
+  on an entry with journal entries. Private and password fields are journaled as keyed hashes; values in 409
+  messages and merge notes follow the editor's read permissions; component rows are named by field and position
+  ("items row 2 qty"), never by a value. Editors alone and REST or GraphQL calls
+  themselves behave as before; two editors' Saves are last-write-wins, but a discard in one tab makes the other tabs'
+  older forms 409.
+  Reference: [locking.md](https://github.com/isokron-ai/strapi-plugin-writesafe/blob/main/docs/locking.md#stale-admin-forms-staleformguard-default-on).
 - **Jobs, `publish: "if_clean"`, `if_match`** (phase 4): `ws_job` lists, reads, cancels and undoes the token's own
   ws_bulk, ws_replace and undo jobs (undo jobs can now be cancelled). `publish: "if_clean"` on ws_patch and on ws_bulk
   patch and ws_replace jobs also publishes in the same write, only when the draft had no other unpublished change.

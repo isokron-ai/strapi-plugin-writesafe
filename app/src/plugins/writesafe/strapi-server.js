@@ -50,7 +50,7 @@ module.exports = {
   register({ strapi }) {
     const cfg = CFG.get(strapi);
     // first: the Document Service lock wraps every later middleware (docs/locking.md)
-    require('./server/compat/document-lock').install(strapi, cfg.documentServiceLock);
+    require('./server/compat/document-lock').install(strapi, cfg.documentServiceLock, cfg.staleFormGuard);
     // [stream G re-review A1] where admin API tokens are accepted; 'mcp-only' that cannot be installed stops Strapi
     require('./server/compat/admin-tokens').install(strapi, cfg.adminTokens);
     // Version hashes are keyed with a secret the app already has (APP_KEYS), so a token cannot test guesses for
@@ -86,6 +86,8 @@ module.exports = {
     await engine.ensureReceiptIndex(strapi);
     // Row key epoch (1.0 hardening item 16b): its own table, outside what `strapi export` / `import` carries.
     await require('./server/epoch').init(strapi);
+    // The revision counter and the stale admin form guard's journal (compat/stale-form.js): with the Document Service lock
+    if (cfg.documentServiceLock) await require('./server/compat/stale-form').ensureTables(strapi);
     // Receipts retention (1.0 hardening item 5): keys, jobs and stale claims; runs once now, then on a timer.
     require('./server/retention').start(strapi, cfg.retention);
     engine.watchQueryErrors(strapi);

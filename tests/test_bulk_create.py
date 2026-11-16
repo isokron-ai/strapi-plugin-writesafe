@@ -419,7 +419,7 @@ def sql(q):
                               os.environ.get("SPIKE_DB_NAME", "strapi"), "-e", "SET SESSION sql_mode='ANSI_QUOTES'; " + q], env=dict(os.environ, MYSQL_PWD=pw), capture_output=True, text=True, check=True).stdout
         return [l.split("\t") for l in out.splitlines() if l]
     if os.environ.get("SPIKE_PG"):
-        out = subprocess.run(["docker", "exec", os.environ["SPIKE_PG_CONTAINER"], "psql", "-U", os.environ.get("SPIKE_PG_USER", "postgres"), "-d", os.environ.get("SPIKE_DB_NAME", "strapi"), "-At", "-F", "\t", "-c", q],
+        out = subprocess.run(["docker", "exec", *common.pg_exec_env(), os.environ["SPIKE_PG_CONTAINER"], "psql", "-U", os.environ.get("SPIKE_PG_USER", "postgres"), "-d", os.environ.get("SPIKE_DB_NAME", "strapi"), "-At", "-F", "\t", "-c", q],
                              capture_output=True, text=True, check=True).stdout
         return [l.split("\t") for l in out.splitlines() if l]
     c = sqlite3.connect(common.DB, timeout=30)
