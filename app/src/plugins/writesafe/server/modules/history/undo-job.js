@@ -411,7 +411,11 @@ async function classify(strapi, ctx, E, e) {
     return { ...w, op: e.op, would: Object.keys(U.restoreData(strapi, e, cur)).length ? 'restore' : 'unchanged' };
   }
   if (e.op === 'create') return { ...w, op: e.op, would: raw ? 'delete' : 'already_gone' };
-  if (e.op === 'delete') return { ...w, op: e.op, would: raw ? 'conflict' : 'recreate', ...(raw ? { changed_since: ['(document exists again)'] } : {}) };
+  if (e.op === 'delete') {
+    if (raw) return { ...w, op: e.op, would: 'conflict', changed_since: ['(document exists again)'] };
+    // the same check as the undo itself (undo.js recreateCheck): a refused recreate is shown as refused
+    return { ...w, op: e.op, would: (await U.recreateCheck(strapi, ctx, E, e)).ok ? 'recreate' : 'forbidden' };
+  }
   return { ...w, op: e.op, would: 'not_undoable' };
 }
 
@@ -486,5 +490,5 @@ async function handle(strapi, ctx, E, a, extra) {
 
 module.exports = {
   handle, route, sourceStatus, nextEntries, scopeKey, gather, sizeOf, rowView, storedError, INLINE_MAX, HINT_RUNNING, HINT_CONFLICTS, HINT_STOPPED,
-  statusView, view, cancel, resumeCheck, callerId, TOTALS,
+  statusView, view, cancel, resumeCheck, callerId, TOTALS, classify,
 };

@@ -521,8 +521,9 @@ receipt that touched an entry the token cannot read is refused (`forbidden`) wit
 
 `ws_undo {receipt_id}` reverts what that receipt changed: fields go back to their before values; for lists only the
 rows the write added, updated, removed or moved are reverted, so rows other writers added stay. A created document is
-deleted, a deleted one recreated (as a draft, same documentId, under its original creator and editor; only by a
-token that may read every field of the stored image on the original document, otherwise `forbidden`). `item` undoes one batch item, `documentId` one document,
+deleted, a deleted one recreated (as a draft, same documentId, under its original creator, or none when that admin
+user is gone, with the undoer as editor; only by a token that may read every field of the stored image on the original
+document, otherwise `forbidden`, as the undo job's dry run shows). `item` undoes one batch item, `documentId` one document,
 and a bulk `job_id` the whole job (also `ws_job {action: "undo", job_id}`). A document whose reverted fields or rows changed since is left alone and listed in
 `conflicts` (`on_conflict: "skip"`, the default since the 1.0 hardening): `current` (the fields in `changed_since`, with
 `omitted` naming the document's other readable fields), `changed_since`, and `before`, the

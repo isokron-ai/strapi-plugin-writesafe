@@ -45,7 +45,7 @@ function realStrapi() {
     },
   };
   const seo = { uid: 'shared.seo', modelType: 'component', attributes: { metaTitle: { type: 'string' }, metaSecret: { type: 'string' } } };
-  const state = { docs: { mine: doc(1, 'mine', ME), theirs: doc(2, 'theirs', 8) }, created: [] };
+  const state = { docs: { mine: doc(1, 'mine', ME), theirs: doc(2, 'theirs', 8) }, created: [], users: new Set([ME, 8]) };
   const strapi = {
     contentTypes: { [PAGE]: schema }, components: { 'shared.seo': seo },
     getModel: (u) => ({ [PAGE]: schema, 'shared.seo': seo })[u] || { uid: u, attributes: { id: {} } },
@@ -60,7 +60,7 @@ function realStrapi() {
           execute: async () => Object.values(state.docs).filter((d) => !where.documentId || d.documentId === where.documentId).map((d) => ({ id: d.id, documentId: d.documentId, locale: null, updatedAt: d.updatedAt })) };
         return ch;
       },
-      query: () => ({ findOne: async () => null, findMany: async () => [], count: async () => 0 }),
+      query: (u) => ({ findOne: async (q) => (u === 'admin::user' && state.users.has(q && q.where && q.where.id) ? { id: q.where.id } : null), findMany: async () => [], count: async () => 0 }),
     },
     documents: () => ({
       findOne: async (p) => (state.docs[p.documentId] ? { ...state.docs[p.documentId] } : null),
@@ -188,7 +188,7 @@ test('delete + undo: the two-role token cannot bring back another user\'s page w
     assert.strictEqual(out.value.op, 'recreated');
     assert.strictEqual(state.created[0].secretCode, HIDDEN);
     assert.strictEqual(state.created[0].createdBy, 8, 'createdBy restored, not the undoer');
-    assert.strictEqual(state.created[0].updatedBy, 8);
+    assert.strictEqual(state.created[0].updatedBy, ME, 'updatedBy is the undoer, so the admin shows who restored the page');
     // and the two-role token still cannot read the hidden field of the restored page
     const g = await E.getDoc(strapi, ctxFor(TWO_ROLE), { uid: PAGE, documentId: 'theirs' });
     noHidden(g);
@@ -211,4 +211,73 @@ test('readableOnly: arrays filtered per element; an unreadable component left ou
   const ALL = CM.permissionChecker(strapi, ctxFor([{ action: R, subject: PAGE }]), PAGE);
   const withRef = await ALL.sanitizeOutput({ ...state.docs.theirs, createdBy: { id: 8, firstname: 'Bo', email: 'bo@example.test' } });
   assert.ok(!withRef.createdBy || !('email' in withRef.createdBy), 'a related document carries its identity only');
+});
+
+// ---------------------------------------------------------------- follow-up to #49
+const withCapture = async (fn) => {
+  const MODS = require('../server/modules');
+  const C = require('../server/modules/history/capture');
+  const saved = { has: MODS.hasAfterWrite, after: MODS.afterWrite, before: MODS.beforeWrite };
+  const entries = [];
+  MODS.hasAfterWrite = () => true;
+  MODS.beforeWrite = async () => {};
+  MODS.afterWrite = async (c, info, before, after) => {
+    const raw = info.raw || {};
+    const full = (k, v) => (k in raw ? raw[k] : v);
+    entries.push(C.entryOf(info, full('before', before), full('after', after), { before, after }));
+    return undefined;
+  };
+  try { return await fn(entries); } finally { MODS.hasAfterWrite = saved.has; MODS.afterWrite = saved.after; MODS.beforeWrite = saved.before; require('../server/modules').load(null, { modules: {} }); }
+};
+const WITH_DELETE = [...TWO_ROLE, { action: 'plugin::content-manager.explorer.delete', subject: PAGE }, { action: 'plugin::content-manager.explorer.create', subject: PAGE }];
+const READER = [{ action: R, subject: PAGE }, { action: 'plugin::content-manager.explorer.create', subject: PAGE }, { action: U, subject: PAGE }, { action: 'plugin::content-manager.explorer.delete', subject: PAGE }];
+
+test('undo of a delete whose original creator no longer exists: createdBy none (not the undoer), and own-entries rules fail closed', async () => {
+  quiet();
+  await withCapture(async (entries) => {
+    const { strapi, state } = realStrapi();
+    require('../server/modules/history/capture').configure(strapi, {});
+    const D = require('../server/modules/delete');
+    const U2 = require('../server/modules/history/undo');
+    // a page of user 7 (ME) that the two-role token could undo while 7 exists
+    await D.applyDelete(strapi, ctxFor(WITH_DELETE), { uid: PAGE, documentId: 'mine', expected_version: M.versionOf(strapi, PAGE, state.docs.mine) });
+    const e = { ...entries.find((x) => x.op === 'delete'), rid: 1, i: 0 };
+    state.users.delete(ME); // the creator's admin account is removed
+    let err = null;
+    try { await U2.revertOne(strapi, ctxFor(WITH_DELETE), E, e, { raw: null, args: {} }); } catch (x) { err = x.payload; }
+    assert.ok(err && err.code === 'forbidden', 'own-entries rule: no creator to match, refused');
+    const out = await U2.revertOne(strapi, ctxFor(READER), E, e, { raw: null, args: {} });
+    assert.strictEqual(out.value.op, 'recreated');
+    assert.strictEqual(state.created[0].createdBy, null, 'no creator, rather than the undoer');
+  });
+});
+
+test('ws_undo job dry run shows a refused delete as forbidden, not as a recreate', async () => {
+  quiet();
+  await withCapture(async (entries) => {
+    const { strapi, state } = realStrapi();
+    require('../server/modules/history/capture').configure(strapi, {});
+    const D = require('../server/modules/delete');
+    const UJ = require('../server/modules/history/undo-job');
+    await D.applyDelete(strapi, ctxFor(WITH_DELETE), { uid: PAGE, documentId: 'theirs', expected_version: M.versionOf(strapi, PAGE, state.docs.theirs) });
+    const e = { ...entries.find((x) => x.op === 'delete'), rid: 1, i: 0 };
+    assert.strictEqual((await UJ.classify(strapi, ctxFor(WITH_DELETE), E, e)).would, 'forbidden');
+    assert.strictEqual((await UJ.classify(strapi, ctxFor(READER), E, e)).would, 'recreate');
+  });
+});
+
+test('undo of a create (a delete) keeps the creator with its history entry, so undoing that undo works for an own-entries token', async () => {
+  quiet();
+  await withCapture(async (entries) => {
+    const { strapi, state } = realStrapi();
+    require('../server/modules/history/capture').configure(strapi, {});
+    const W = require('../server/modules/_lib/write');
+    const U2 = require('../server/modules/history/undo');
+    await W.deleteLocale(strapi, ctxFor(WITH_DELETE), E, { tool: 'ws_undo', uid: PAGE, documentId: 'mine', raw: { ...state.docs.mine }, args: {}, dryRun: false, creators: { createdBy: ME, updatedBy: ME } });
+    const e = { ...entries.find((x) => x.op === 'delete'), rid: 2, i: 0 };
+    assert.deepStrictEqual(e.cr, { cb: ME, ub: ME });
+    const out = await U2.revertOne(strapi, ctxFor(WITH_DELETE), E, e, { raw: null, args: {} });
+    assert.strictEqual(out.value.op, 'recreated', 'the own-entries token may bring its own page back');
+    assert.strictEqual(state.created[0].createdBy, ME);
+  });
 });

@@ -94,6 +94,23 @@ def t_conflict_structure():
 
 
 @T
+def t_undo_delete_creator():
+    # follow-up to #49: ws_undo of a delete restores the original creator, or none when there was none (a page made
+    # through the REST API with an API token has no admin creator), never the undoer; updatedBy is the undoer
+    s, b, _ = spike.rest(RA, "POST", "/api/pages", {"data": {"title": "undo creator rest", "note": "n0"}})
+    doc = b["data"]["documentId"]
+    g = get(doc)
+    err, d, _ = ws("ws_delete", {"uid": UID, "documentId": doc, "expected_version": g["version"]})
+    check("delete of a page without an admin creator", not err and d.get("deleted") and d.get("receipt_id"), d)
+    err, u, _ = ws("ws_undo", {"receipt_id": d["receipt_id"]})
+    check("undo recreates it", not err and (u or {}).get("items", [{}])[0].get("op") == "recreated", u)
+    with common.db() as c:
+        row = c.execute("select created_by_id, updated_by_id from pages where document_id=? and published_at is null", (doc,)).fetchone()
+    check("recreated without a creator (not the undoer)", row is not None and row[0] is None, row)
+    check("updatedBy is the undoer", row is not None and row[1] is not None, row)
+
+
+@T
 def t_conflict_whole_state():
     # MWS-CONC-6: the conflict carries the document's current state, also another writer's change to a field the refused
     # write did not touch (an agent sets the note while a colleague edits the summary), with the version of that state

@@ -6,6 +6,7 @@
  */
 const M = require('../../model');
 const CM = require('../../compat/content-manager');
+const idOf = (u) => (u && typeof u === 'object' ? u.id ?? null : u ?? null);
 const W = require('../_lib/write');
 const C = require('./capture');
 
@@ -208,6 +209,26 @@ async function entryVisible(strapi, ctx, E, e, raw) {
   return !pc.cannot.read(raw || (e.locale ? { locale: e.locale } : {}));
 }
 
+/**
+ * May this token undo this delete, and under which creator (review of #49)? The image is kept server-side with
+ * Strapi's field-level sanitizer, so it can hold fields the deleting token could not read on the page. Only an undoer
+ * who may read every field of it ON THE ORIGINAL PAGE (its creator restored) may bring it back; otherwise the recreate
+ * would show the content to the undoer, or make the page theirs. The original creator is kept only while that admin
+ * user still exists (a gone one is null, which fails closed for rules limited to own entries). Returns
+ * { ok, creators: { createdBy } }: updatedBy is left to the undoer, so the admin shows who restored the page.
+ */
+async function recreateCheck(strapi, ctx, E, e) {
+  const cr = e.cr || {};
+  let cb = cr.cb != null ? cr.cb : null;
+  if (cb != null) {
+    try { if (!(await strapi.db.query('admin::user').findOne({ where: { id: cb }, select: ['id'] }))) cb = null; } catch { cb = null; }
+  }
+  const original = { ...(e.doc || {}), ...(e.locale ? { locale: e.locale } : {}), createdBy: cb != null ? { id: cb } : null };
+  const pcu = E.permissionChecker(strapi, ctx, e.uid);
+  const ok = !E.cannotReadDoc(pcu, original) && M.canonical(CM.readableOnly(strapi, e.uid, pcu, original, e.doc || {})) === M.canonical(e.doc || {});
+  return { ok, creators: { createdBy: cb } };
+}
+
 /** Revert one locked entry: {kind: 'item' | 'conflict' | 'skipped', value}. opt: {force, dryRun, args, raw?}. */
 async function revertOne(strapi, ctx, E, e, opt) {
   const where = { uid: e.uid, documentId: e.documentId, locale: e.locale || null, item: e.ref ?? e.i };
@@ -240,7 +261,7 @@ async function revertOne(strapi, ctx, E, e, opt) {
     // Deleting also removes a published version, and publishing does not change the draft's version.
     const live = E.hasDP(strapi, e.uid) && await strapi.db.query(e.uid).findOne({ select: ['id'], where: { documentId: e.documentId, ...(e.locale ? { locale: e.locale } : {}), publishedAt: { $notNull: true } } });
     if (live && !opt.force) return { kind: 'conflict', value: await conflictPayload(strapi, ctx, E, e, raw, ['(published since it was created)'], { item: where.item }) };
-    await W.deleteLocale(strapi, ctx, E, { tool: 'ws_undo', uid: e.uid, documentId: e.documentId, locale: e.locale || undefined, raw, args: a, dryRun: opt.dryRun });
+    await W.deleteLocale(strapi, ctx, E, { tool: 'ws_undo', uid: e.uid, documentId: e.documentId, locale: e.locale || undefined, raw, args: a, dryRun: opt.dryRun, creators: { createdBy: idOf(raw && raw.createdBy), updatedBy: idOf(raw && raw.updatedBy) } });
     tag();
     return { kind: 'item', value: { ...where, op: 'deleted' } };
   }
@@ -249,14 +270,10 @@ async function revertOne(strapi, ctx, E, e, opt) {
     // The image is kept server-side with Strapi's field-level sanitizer, so it can hold fields the deleting token could
     // not read on this page. Only an undoer who may read every field of it ON THE ORIGINAL PAGE (its creator restored)
     // may bring it back; otherwise the recreate would show the content to the undoer, or make the page theirs.
-    const cr = e.cr || {};
-    const original = { ...(e.doc || {}), ...(e.locale ? { locale: e.locale } : {}), createdBy: cr.cb != null ? { id: cr.cb } : null, updatedBy: cr.ub != null ? { id: cr.ub } : null };
-    const pcu = E.permissionChecker(strapi, ctx, e.uid);
-    if (E.cannotReadDoc(pcu, original) || M.canonical(CM.readableOnly(strapi, e.uid, pcu, original, e.doc || {})) !== M.canonical(e.doc || {})) {
-      throw new E.WsError({ code: 'forbidden', message: 'This token may not undo this delete. Nothing was undone.' });
-    }
+    const chk = await recreateCheck(strapi, ctx, E, e);
+    if (!chk.ok) throw new E.WsError({ code: 'forbidden', message: 'This token may not undo this delete. Nothing was undone.' });
     const data = W.stripIds(strapi, e.uid, e.doc);
-    const r = await W.recreate(strapi, ctx, E, { tool: 'ws_undo', uid: e.uid, documentId: e.documentId, locale: e.locale || undefined, raw, data, args: a, dryRun: opt.dryRun, creators: { createdBy: cr.cb ?? null, updatedBy: cr.ub ?? null } });
+    const r = await W.recreate(strapi, ctx, E, { tool: 'ws_undo', uid: e.uid, documentId: e.documentId, locale: e.locale || undefined, raw, data, args: a, dryRun: opt.dryRun, creators: chk.creators });
     tag();
     return { kind: 'item', value: { ...where, op: 'recreated', status: 'draft', version: versionOf(strapi, e.uid, r.raw), ...(r.doc.documentId !== e.documentId ? { new_documentId: r.doc.documentId } : {}) } };
   }
@@ -366,5 +383,5 @@ async function applyUndo(strapi, ctx, E, a) {
 }
 
 module.exports = {
-  applyUndo, revertOne, lockTargets, cannotRead, entryVisible, readPlain, conflictPayload, readDraft, keyOf, undoRowsOf, versionOf, restoreList, changedSince, restoreData, receiptRows, UNDO_HINT, UNDO_SKIP_HINT,
+  applyUndo, revertOne, recreateCheck, lockTargets, cannotRead, entryVisible, readPlain, conflictPayload, readDraft, keyOf, undoRowsOf, versionOf, restoreList, changedSince, restoreData, receiptRows, UNDO_HINT, UNDO_SKIP_HINT,
 };

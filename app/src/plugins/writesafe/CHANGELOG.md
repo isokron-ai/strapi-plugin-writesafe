@@ -57,9 +57,11 @@ the Upgrading notes below are complete.
   other users' fields. Each document's fields are now checked against the token's rules with that document as the
   subject (components per sub-field; an unreadable component is left out whether it is empty or not; related documents
   are shown by their id only). **(contract)** ws_undo of a delete brings the document back under its original
-  `createdBy`/`updatedBy` (kept with the history entry), and only for a token that may read every field of the stored
-  image on the original document; otherwise it is refused (`forbidden`). Receipts written before the upgrade have no
-  stored creator, so their deletes are undone only by a token that may read the image on any document.
+  `createdBy` (kept with the history entry; none when that admin user no longer exists, never the undoer), with
+  `updatedBy` the undoer, and only for a token that may read every field of the stored image on the original document;
+  otherwise it is refused (`forbidden`), and the undo job's dry run shows it as `forbidden`. Receipts written before
+  the upgrade have no stored creator, so their deletes are undone only by a token that may read the image on any
+  document.
 - **Memory and tools/list on Strapi 5.47 to 5.52.1** (zod 3.25 `@strapi/utils`): tool input and output schemas are
   built once per registration instead of on every MCP session; on those minors zod 3.25 kept every rebuilt schema's
   descriptions, and the heap grew until Strapi stopped. Argument descriptions also reach tools/list there (the MCP SDK

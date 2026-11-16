@@ -82,8 +82,8 @@ async function writeFields(strapi, ctx, E, { tool, action, uid, documentId, loca
   const dropped = Object.keys(data).filter((k) => !(k in (sanitized || {})));
   if (dropped.length) throw new E.WsError({ code: 'forbidden', message: `This token cannot write field(s): ${dropped.join(', ')}. Nothing was written.` });
   const payload = setCreatorFields({ user: ctx.user, isEdition: !creating })(sanitized);
-  if (creating && creators && creators.createdBy != null) payload.createdBy = creators.createdBy; // ws_undo of a delete
-  if (creating && creators && creators.updatedBy != null) payload.updatedBy = creators.updatedBy;
+  // ws_undo of a delete: the original creator (or none, when that admin user is gone); updatedBy stays the undoer
+  if (creating && creators && 'createdBy' in creators) payload.createdBy = creators.createdBy;
   const info = { tool, action: creating ? 'create' : action || 'patch', uid, documentId, locale: locale || null, args, dryRun: Boolean(dryRun) };
   await MOD.beforeWrite(ctx, info);
   const updatedRaw = await strapi.documents(uid).update({
@@ -97,10 +97,11 @@ async function writeFields(strapi, ctx, E, { tool, action, uid, documentId, loca
 }
 
 /** Delete the draft (and published version) of one locale, or of the whole document for a type without i18n. */
-async function deleteLocale(strapi, ctx, E, { tool, uid, documentId, locale, raw, args, dryRun }) {
+async function deleteLocale(strapi, ctx, E, { tool, uid, documentId, locale, raw, args, dryRun, creators }) {
   const pc = E.permissionChecker(strapi, ctx, uid);
   if (pc.cannot.delete(raw)) throw new E.WsError({ code: 'forbidden', message: `This token cannot delete ${uid} ${documentId}${locale ? ` (locale ${locale})` : ''}.` });
-  const info = { tool, action: 'delete', uid, documentId, locale: locale || null, args, dryRun: Boolean(dryRun) };
+  // creators: kept with the history entry (ws_undo of this delete restores them and checks against them)
+  const info = { tool, action: 'delete', uid, documentId, locale: locale || null, args, dryRun: Boolean(dryRun), ...(creators ? { creators } : {}) };
   await MOD.beforeWrite(ctx, info);
   const prev = M.normalize(strapi, uid, raw);
   // A dry run (ws_undo of a create) does not call Strapi's delete, so no middleware or lifecycle hook runs (phase 2 item 10).
@@ -165,8 +166,7 @@ async function recreate(strapi, ctx, E, { tool, uid, documentId, locale, raw, da
   if (dropped.length) throw new E.WsError({ code: 'forbidden', message: `This token cannot write field(s): ${dropped.join(', ')}. Nothing was written.` });
   const payload = setCreatorFields({ user: ctx.user })(sanitized);
   // ws_undo of a delete: the document comes back under its original creator and editor, not the undoer's
-  if (creators && creators.createdBy != null) payload.createdBy = creators.createdBy;
-  if (creators && creators.updatedBy != null) payload.updatedBy = creators.updatedBy;
+  if (creators && 'createdBy' in creators) payload.createdBy = creators.createdBy;
   const info = { tool, action: 'create', uid, documentId, locale: locale || null, args, dryRun: Boolean(dryRun) };
   await MOD.beforeWrite(ctx, info);
   // The Document Service makes a new documentId on create; the entity layer keeps one given in data (Strapi's own
