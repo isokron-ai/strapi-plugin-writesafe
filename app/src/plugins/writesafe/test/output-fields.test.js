@@ -281,3 +281,15 @@ test('undo of a create (a delete) keeps the creator with its history entry, so u
     assert.strictEqual(state.created[0].createdBy, ME);
   });
 });
+
+test('readableOnly keeps document metadata (locale, timestamps) even where a field list does not name them', async () => {
+  const { strapi, state } = realStrapi();
+  strapi.contentTypes[PAGE].attributes.locale = { type: 'string', configurable: false, visible: false }; // as i18n declares it
+  const CM = require('../server/compat/content-manager');
+  const pc = CM.permissionChecker(strapi, ctxFor([{ action: R, subject: PAGE, fields: ['title'] }]), PAGE);
+  const out = await pc.sanitizeOutput({ ...state.docs.theirs, locale: 'fr' });
+  assert.strictEqual(out.locale, 'fr', 'locale stays: row keys are scoped by it');
+  assert.strictEqual(out.documentId, 'theirs');
+  assert.strictEqual(out.updatedAt, state.docs.theirs.updatedAt);
+  assert.ok(!('secretCode' in out));
+});

@@ -106,8 +106,9 @@ def t_undo_delete_creator():
     check("undo recreates it", not err and (u or {}).get("items", [{}])[0].get("op") == "recreated", u)
     with common.db() as c:
         row = c.execute("select created_by_id, updated_by_id from pages where document_id=? and published_at is null", (doc,)).fetchone()
-    check("recreated without a creator (not the undoer)", row is not None and row[0] is None, row)
-    check("updatedBy is the undoer", row is not None and row[1] is not None, row)
+    # NULL as each database helper prints it: None (SQLite), "" (Postgres, psql), "NULL" (MySQL, mysql -B)
+    check("recreated without a creator (not the undoer)", row is not None and row[0] in (None, "", "NULL"), row)
+    check("updatedBy is the undoer", row is not None and row[1] not in (None, "", "NULL"), row)
 
 
 @T

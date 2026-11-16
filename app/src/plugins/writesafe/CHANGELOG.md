@@ -56,7 +56,7 @@ the Upgrading notes below are complete.
   "title on every page" plus "every field on own pages" ws_get, ws_find, write replies and conflict replies showed
   other users' fields. Each document's fields are now checked against the token's rules with that document as the
   subject (components per sub-field; an unreadable component is left out whether it is empty or not; related documents
-  are shown by their id only). **(contract)** ws_undo of a delete brings the document back under its original
+  are shown by their id only; `id`, `documentId`, `locale` and the timestamps are document metadata and always kept). **(contract)** ws_undo of a delete brings the document back under its original
   `createdBy` (kept with the history entry; none when that admin user no longer exists, never the undoer), with
   `updatedBy` the undoer, and only for a token that may read every field of the stored image on the original document;
   otherwise it is refused (`forbidden`), and the undo job's dry run shows it as `forbidden`. Receipts written before

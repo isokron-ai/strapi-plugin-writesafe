@@ -18,6 +18,10 @@ const localesService = (strapi) => {
  * Content Manager checks a single field). Components are checked per sub-field; a dynamic zone is one permission field.
  * It only removes: what sanitizeOutput already left out stays out.
  */
+// Document metadata, not permission fields (Strapi's read field lists never name them; i18n declares `locale` as an
+// attribute of localized types): always kept, as Strapi's sanitizer keeps them. Read rules by locale are conditions.
+const META_KEYS = new Set(['id', 'documentId', 'locale', 'createdAt', 'updatedAt', 'publishedAt']);
+
 function readableOnly(strapi, uid, pc, entity, out) {
   if (Array.isArray(out)) return out.map((x, i) => readableOnly(strapi, uid, pc, Array.isArray(entity) ? entity[i] : x, x));
   if (!out || typeof out !== 'object') return out;
@@ -58,7 +62,7 @@ function readableOnly(strapi, uid, pc, entity, out) {
   const res = {};
   for (const [k, v] of Object.entries(out)) {
     const a = attrs[k];
-    if (!a) { res[k] = v; continue; } // id, documentId, locale, timestamps: not permission fields
+    if (!a || META_KEYS.has(k)) { res[k] = v; continue; } // id, documentId, locale, timestamps: not permission fields
     if (can(k)) { res[k] = isRef(a) ? ref(v) : v; continue; }
     if (a.type === 'component') {
       const inner = sub(v, ((comps[a.component] || {}).attributes) || {}, k, 0);
