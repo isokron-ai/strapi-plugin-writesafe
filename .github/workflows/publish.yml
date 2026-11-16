@@ -1,10 +1,18 @@
 name: Publish to npm
 
-# Manual only. Publishes app/src/plugins/writesafe as strapi-plugin-writesafe-mcp.
-# Needs the repository secret NPM_TOKEN (an npm automation or granular token with publish rights on the package);
-# the owner adds it when the package is ready. Default is a dry run: nothing leaves the runner.
-# Provenance (npm publish --provenance) needs a PUBLIC source repository: npm refuses provenance from a private one.
-# Publish from the public plugin repository, or untick provenance for a private-repo publish.
+# Manual only. Publishes app/src/plugins/writesafe as strapi-plugin-writesafe-mcp from the PUBLIC plugin repository
+# (isokron-ai/strapi-plugin-writesafe), with npm Trusted Publishing: the job's GitHub OIDC token is exchanged for a
+# short-lived publish credential, so no npm token is stored anywhere (no NPM_TOKEN secret). Provenance is attached
+# for a public package published this way from a public repository.
+#
+# npm side (once, by the package owner): npmjs.com > strapi-plugin-writesafe-mcp > Settings > Trusted Publisher >
+# GitHub Actions: organization isokron-ai, repository strapi-plugin-writesafe, workflow publish.yml, environment
+# npm. Then Publishing access: "Require two-factor authentication and disallow tokens" (trusted publishers keep
+# working). GitHub side: the environment npm in the public repository (required reviewer: the owner; deployment branch main).
+#
+# Two jobs: `check` (guards, unit tests, package checks, `npm publish --dry-run`) needs no approval and runs on every
+# dispatch; `publish` runs only when dry_run is false, in the npm environment (approval), with id-token: write.
+# Requirements (npm docs): npm CLI 11.5.1 or later and Node 22.14.0 or later, on a GitHub-hosted runner.
 
 on:
   workflow_dispatch:
@@ -13,11 +21,7 @@ on:
         description: 'Version to publish; must equal package.json version (a guard against publishing the wrong build)'
         required: true
       dry_run:
-        description: 'Dry run (npm publish --dry-run)'
-        type: boolean
-        default: true
-      provenance:
-        description: 'Publish with npm provenance (public repository only)'
+        description: 'Dry run (npm publish --dry-run; nothing leaves the runner)'
         type: boolean
         default: true
       dist_tag:
@@ -33,13 +37,13 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  check:
+    name: Guards, tests and dry run
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       actions: read     # the guard checks that CI passed on this commit
-      id-token: write   # npm provenance (sigstore) uses the workflow's OIDC token
     defaults:
       run:
         working-directory: app/src/plugins/writesafe
@@ -50,17 +54,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
       - name: Guards
         env:
           INPUT_VERSION: ${{ github.event.inputs.version }}
-          PROVENANCE: ${{ github.event.inputs.provenance }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           REPO_PRIVATE: ${{ github.event.repository.private }}
-          HAS_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
           DIST_TAG: ${{ github.event.inputs.dist_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # a dist-tag is a plain name: an empty value or one like --registry=... would be read as an npm option
+          [[ "$DIST_TAG" =~ ^[a-z][a-z0-9._-]*$ ]] || { echo "::error::bad dist_tag"; exit 1; }
           PKG_VERSION=$(node -p 'require("./package.json").version')
           [ "$PKG_VERSION" = "$INPUT_VERSION" ] || { echo "::error::package.json is $PKG_VERSION, input is $INPUT_VERSION"; exit 1; }
           case "$GITHUB_REF" in refs/heads/main|refs/tags/v*) ;; *) [ "$DRY_RUN" = true ] || { echo "::error::real publishes only from main or a v* tag (ref: $GITHUB_REF)"; exit 1; } ;; esac
@@ -69,13 +72,15 @@ jobs:
           if [ "$DRY_RUN" != true ]; then
             CI_OK=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq '.total_count' 2>/dev/null || echo 0)
             [ "$CI_OK" != 0 ] || { echo "::error::no successful CI run (ci.yml) for $GITHUB_SHA"; exit 1; }
+            # trusted publishing (and its provenance) works from the public repository only
+            [ "$REPO_PRIVATE" != true ] || { echo "::error::publish from the public plugin repository (isokron-ai/strapi-plugin-writesafe)"; exit 1; }
           fi
-          if [ "$PROVENANCE" = true ] && [ "$REPO_PRIVATE" = true ] && [ "$DRY_RUN" != true ]; then
-            echo "::error::npm provenance needs a public source repository; this one is private. Publish from the public plugin repo, or untick provenance."; exit 1
+          # a version already on npm stops a real publish; a dry run only warns, so the workflow can be checked on the
+          # released commit (npm publish --dry-run sends nothing)
+          if npm view "strapi-plugin-writesafe-mcp@$PKG_VERSION" version >/dev/null 2>&1; then
+            if [ "$DRY_RUN" = true ]; then echo "::warning::$PKG_VERSION is already on npm (dry run: continuing)"; else echo "::error::$PKG_VERSION is already on npm"; exit 1; fi
           fi
-          if [ "$DRY_RUN" != true ] && [ "$HAS_TOKEN" != true ]; then echo "::error::NPM_TOKEN secret is not set"; exit 1; fi
-          if npm view "strapi-plugin-writesafe-mcp@$PKG_VERSION" version >/dev/null 2>&1; then echo "::error::$PKG_VERSION is already on npm"; exit 1; fi
-          echo "publishing strapi-plugin-writesafe-mcp@$PKG_VERSION (dry run: $DRY_RUN, provenance: $PROVENANCE)"
+          echo "strapi-plugin-writesafe-mcp@$PKG_VERSION, dist-tag $DIST_TAG (dry run: $DRY_RUN)"
       # the unit tests load @strapi/utils, zod and file-type from the test app, and the stale form tests open SQLite
       # through knex (as in ci.yml): install the app without scripts, then build only the SQLite driver
       - name: Install the test app's dependencies
@@ -91,14 +96,45 @@ jobs:
         run: |
           python3 scripts/scan_secrets.py
           node ci/check_pack.mjs
+      # npm 10 (bundled with Node 22) here: its dry run of a version already on npm lists the files and exits 0, so the
+      # workflow can be checked on a released commit (1.0.0). npm 11 would exit 1 ("cannot publish over previously
+      # published versions"), so do not upgrade npm in this job.
+      - name: Dry run (what would be published)
+        env:
+          DIST_TAG: ${{ github.event.inputs.dist_tag }}
+        run: npm publish --dry-run --access public --tag "$DIST_TAG"
+
+  publish:
+    name: Publish (trusted publishing)
+    needs: check
+    if: ${{ github.event.inputs.dry_run == 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # the npm Trusted Publisher entry names this environment; it also holds the owner's approval
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write   # the OIDC token npm exchanges for a short-lived publish credential (and signs provenance with)
+    defaults:
+      run:
+        working-directory: app/src/plugins/writesafe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # no registry-url: setup-node would write an .npmrc with a placeholder token, and a failed OIDC exchange would
+      # then show as a 401/404 on that token instead of npm's ENEEDAUTH
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10
+      - name: npm 11
+        run: npm install -g npm@^11.5.1 --no-audit --no-fund --loglevel=error && npm --version
       - name: Publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          DRY_RUN: ${{ github.event.inputs.dry_run }}
-          PROVENANCE: ${{ github.event.inputs.provenance }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
           DIST_TAG: ${{ github.event.inputs.dist_tag }}
         run: |
-          ARGS=(--access public --tag "$DIST_TAG")
-          [ "$DRY_RUN" = true ] && ARGS+=(--dry-run)
-          [ "$PROVENANCE" = true ] && [ "$DRY_RUN" != true ] && ARGS+=(--provenance)
-          npm publish "${ARGS[@]}"
+          [[ "$DIST_TAG" =~ ^[a-z][a-z0-9._-]*$ ]] || { echo "::error::bad dist_tag"; exit 1; }
+          [ "$(node -p 'require("./package.json").version')" = "$INPUT_VERSION" ] || { echo "::error::package.json does not match the input version"; exit 1; }
+          npm publish --provenance --access public --tag "$DIST_TAG"
