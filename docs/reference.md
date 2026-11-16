@@ -162,8 +162,8 @@ ws_patch {"uid": "api::page.page", "documentId": "…", "set": {"summary": "New 
   in the write's transaction, on the semantic form the version uses: component rows without ids, relations as
   documentIds, media by reference, `null` and `[]` alike for list fields. A change to a field it does not name never
   blocks it, so two agents editing different fields of one document both land without a re-read.
-- Otherwise the reply is `version_conflict` with `fields_changed` (the named fields that differ), `current` holding
-  those fields only (filtered for the token), `current_version` and `retry: {hint, expected_version}`. Nothing is
+- Otherwise the reply is `version_conflict` with `fields_changed` (the named fields that differ), `current` (the whole
+  document as ws_get shows it to the token), `current_version` and `retry: {hint, expected_version}`. Nothing is
   written. The hint says to re-apply only the agent's own change to the new value, never to resend the old copy.
 - A component, a list or a relation is compared as a whole: name `seo`, not `seo.metaTitle` (a dotted path is
   `invalid`). A relation is compared by documentId, as ws_get shows it: a link moved to another locale of the same
@@ -276,9 +276,10 @@ only in data fields (`current`, `before`, `value`, `declared_type`, ...), never 
 
 The codes are:
 
-- `version_conflict`: carries `current_version`, `current` (the current values of the fields you touched),
-  `current_rows`, and a `retry` block that depends on the action (an `if_match` refusal adds `fields_changed`, and
-  `current` holds only those fields):
+- `version_conflict`: carries `current_version`, `current` (the whole document as ws_get shows it to the token, so a
+  change another writer made to any field is in it, not only to the fields the refused write touched), `current_rows`,
+  and a `retry` block that depends on the action (an `if_match` refusal adds `fields_changed`, the named fields that
+  differ):
   - a patch: `retry: {hint, expected_version}`. The hint tells the agent to re-apply only its own change to `current`
     and not resend its earlier copy.
   - a publish, a delete, or a translation into a target locale that changed: `retry: {hint}` with no version. The draft
@@ -286,6 +287,9 @@ The codes are:
     overwrite a state nobody approved. The hint says to show the change and get approval for the new state.
   `current`, `current_rows`, `ws_get` and `return: "full"` show only the fields the token may read; an unreadable field
   is left out, never shown empty.
+  A token that may not read the document at all (no read permission, or a condition this document fails) gets a
+  conflict with `readable: false` and no `current`, `current_rows` or version. A ws_undo conflict shows the fields in
+  `changed_since` and lists the other readable fields in `omitted`.
 - `row_not_found`: the row a key names is gone. Lists the current keys.
 - `stale_row_key` (1.0 hardening item 16b): the row a key names is there, but the key no longer matches it: someone
   edited that row since it was read, the key comes from another database (an import, a restore, a copy to staging) or

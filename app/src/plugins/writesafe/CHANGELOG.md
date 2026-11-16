@@ -22,6 +22,12 @@ the Upgrading notes below are complete.
   sent where a boolean, integer, object or array is declared (`"dry_run": "true"`, `"limit": "5"`, `"set": "{...}"`) is
   refused before the tool runs (`isError`, nothing written), naming the argument, the type and the value. The
   advertised schemas are unchanged. To opt back in: `lenientArgs: true`.
+  **(contract)** A `version_conflict` carries the whole document in `current` (as ws_get shows it to the token), not
+  only the fields the refused write touched, so another writer's change to any field is shown with the
+  `current_version` it belongs to; an `if_match` refusal still names the differing fields in `fields_changed`
+  (MWS-CONC-6). A ws_undo conflict shows the fields changed since the receipt, as before, and now lists the other
+  readable fields in `omitted`. Conflict replies no longer include document content the token cannot read: for such a
+  token the reply has no `current`, `current_rows` or version, and says that the token cannot read the document.
 - **(contract) Version tokens are `v3.`** (self-test D1): the token binds the draft's content revision (per document
   and locale; it moves whenever a Document Service write changes that draft's content) as well as its content, so
   after A → B → A (and after a delete and a re-create under the same documentId) an old token never matches again, so
@@ -100,6 +106,9 @@ the Upgrading notes below are complete.
 ### Upgrading
 
 #### MWS self-test fixes (D1, D3, D4, D5)
+- **Callers that read `Object.keys(current)` of a `version_conflict` as "what changed":** use `fields_changed` (an
+  `if_match` refusal) or `changed_since` (a ws_undo conflict) instead; `current` is now the whole document. A conflict
+  with `readable: false` carries no state: the token cannot read the document.
 - **Agents and scripts that resend a versioned write:** handle `replay_superseded` like `version_conflict` without a
   retry version: read again (ws_get), check whether the change is still there, and send it with an `idempotency_key`
   only if it is still wanted. A late retry after any later write to the document is refused this way too.

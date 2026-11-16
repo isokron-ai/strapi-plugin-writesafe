@@ -268,7 +268,8 @@ item 21):
 
 Each conflict, and the refusal, carries:
 - `changed_since`, e.g. `["note"]` or `["items[shared.item:4]"]`;
-- the current values, filtered for the token, and `current_version`;
+- `current`: the current values of the fields in `changed_since`, filtered for the token, with `omitted` listing the
+  document's other readable fields (JSON Pointers such as `"/title"`), and `current_version`;
 - `before`: what the receipt replaced in those fields (filtered for the token), so the agent can put back its own
   change with ws_patch and keep the later one;
 - `retry: {hint}`. Since the 1.0 hardening it does not offer `force` (that erased the later change).
@@ -522,7 +523,8 @@ receipt that touched an entry the token cannot read is refused (`forbidden`) wit
 rows the write added, updated, removed or moved are reverted, so rows other writers added stay. A created document is
 deleted, a deleted one recreated (as a draft, same documentId). `item` undoes one batch item, `documentId` one document,
 and a bulk `job_id` the whole job (also `ws_job {action: "undo", job_id}`). A document whose reverted fields or rows changed since is left alone and listed in
-`conflicts` (`on_conflict: "skip"`, the default since the 1.0 hardening): `current`, `changed_since`, and `before`, the
+`conflicts` (`on_conflict: "skip"`, the default since the 1.0 hardening): `current` (the fields in `changed_since`, with
+`omitted` naming the document's other readable fields), `changed_since`, and `before`, the
 values the receipt replaced (fields the token can read), so the agent can put back its own change with ws_patch and keep
 the later one; the rest is undone. If nothing could be undone the reply is a `version_conflict`; `on_conflict: "stop"`
 refuses the whole undo at one conflict. The undo of a job (or of a single receipt with more than 100 entries) runs as a resumable

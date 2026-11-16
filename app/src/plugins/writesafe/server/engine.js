@@ -50,6 +50,9 @@ const RETRY_HINT = 'Re-read the document (ws_get, or use `current` below), re-ap
  * into a locale someone else changed must not simply be repeated with the new version: that would publish, delete or
  * overwrite a state nobody reviewed.
  */
+const UNREADABLE_HINT = 'This token cannot read the document, so it cannot see what changed. Do not retry with another '
+  + 'version: the change needs a token that may read the document (ws_get) to review the current state first.';
+
 const RETRY_HINTS = {
   patch: RETRY_HINT,
   publish: 'The draft is no longer the version that was reviewed. Do not publish it as it is now: show what changed '
@@ -169,20 +172,47 @@ function staleRetry(code, message) {
 const versionOfRaw = (strapi, uid, raw) => M.versionOf(strapi, uid, raw);
 
 /**
- * Conflict payload. `current` is filtered through the token's read permissions (sanitizeOutput). `kind` picks the retry
- * advice (RETRY_HINTS): only 'patch' hands back the new version in `retry`; the version shown at the top level always
- * comes with the state it stands for (`current`).
+ * Conflict payload. `current` is the whole document as ws_get shows it to this token (filtered through its read
+ * permissions, sanitizeOutput), never only the fields the refused write touched: the conflict is about the document's
+ * version, so another writer's change to any field is part of the state `current_version` stands for (MWS-CONC-6: the
+ * error carries the object's current state, including the value the other writer wrote). `kind` picks the retry advice
+ * (RETRY_HINTS): only 'patch' hands back the new version in `retry`; the version shown at the top level always comes
+ * with the state it stands for (`current`).
+ *
+ * A token that may not read the document (no read rule for the type, or a conditional read rule this document fails)
+ * gets neither content nor a version: Strapi's sanitizeOutput does not filter fields in those cases, so the same check
+ * as ws_get's (cannot.read) runs first, and the reply says that the token cannot read the document.
+ *
+ * `only` (ws_undo, which may answer for many documents at once): `current` holds just those fields, and `omitted` lists
+ * the other readable fields as JSON Pointers, so the state is never mistaken for the whole document.
  */
-async function conflict(strapi, pc, uid, raw, expected, fields, extra = {}, kind = 'patch') {
+async function conflict(strapi, pc, uid, raw, expected, extra = {}, kind = 'patch', only = null) {
+  const at = { documentId: raw.documentId, locale: raw.locale || null };
+  const message = extra.message || 'The document changed after you read it. Nothing was written.';
+  if (pc.cannot.read() || pc.cannot.read(raw)) {
+    // nothing that depends on the content: no state, no version, no comparison result (fields_changed)
+    const { retry, fields_changed, current_version, current, current_rows, omitted, ...rest } = extra; // eslint-disable-line no-unused-vars
+    return new WsError({
+      code: 'version_conflict', ...at, expected_version: expected, ...rest,
+      message: `${message} This token cannot read this document, so its current content and version are not shown.`,
+      readable: false,
+      retry: { hint: UNREADABLE_HINT },
+    });
+  }
   const visible = await pc.sanitizeOutput(raw);
-  const { data, rows } = M.presentDoc(strapi, uid, visible, fields && fields.length ? fields : undefined, { documentId: raw.documentId, locale: raw.locale || null, full: raw });
+  const fields = Array.isArray(only) && only.length ? only : undefined;
+  const { data, rows } = M.presentDoc(strapi, uid, visible, fields, { ...at, full: raw });
   const current = versionOfRaw(strapi, uid, raw);
+  const omitted = fields
+    ? Object.keys(M.attrsOf(strapi, uid)).filter((k) => !M.SKIP_KEYS.has(k) && visible && k in visible && !fields.includes(k)).map((k) => `/${k}`)
+    : null;
   return new WsError({
     code: 'version_conflict',
-    message: 'The document changed after you read it. Nothing was written.',
-    documentId: raw.documentId, locale: raw.locale || null,
+    message,
+    ...at,
     expected_version: expected, current_version: current,
     current: data, current_rows: rows,
+    ...(omitted && omitted.length ? { omitted } : {}),
     retry: kind === 'patch' ? { hint: RETRY_HINT, expected_version: current } : { hint: RETRY_HINTS[kind] || RETRY_HINTS.delete },
     ...extra,
   });
@@ -752,7 +782,7 @@ async function applyPatch(strapi, ctx, a) {
     if (!attrs[f] || M.SKIP_KEYS.has(f)) throw new WsError({ code: 'invalid', message: `Unknown or read-only field ${f}`, allowed: Object.keys(attrs).filter((k) => !M.SKIP_KEYS.has(k)) });
   }
   if (a.expected_version !== undefined && !M.versionMatches(strapi, uid, a.expected_version, raw)) {
-    throw await conflict(strapi, pc, uid, raw, a.expected_version, touched);
+    throw await conflict(strapi, pc, uid, raw, a.expected_version);
   }
   // The owner's rule (1.0 hardening items 3 and 16c): `set` and `unset` need expected_version (or force); row `ops`
   // never do. A field set from a stale read overwrites a colleague's newer value; a list (dynamic zone, repeatable
@@ -779,7 +809,7 @@ async function applyPatch(strapi, ctx, a) {
     throw preconditionFields(fieldWrites, attrs, nestedOf);
   }
   if (changedMatch.length) {
-    throw await conflict(strapi, pc, uid, raw, a.expected_version, changedMatch, {
+    throw await conflict(strapi, pc, uid, raw, a.expected_version, {
       message: 'A field named in if_match changed after you read it. Nothing was written.',
       fields_changed: changedMatch,
       retry: { hint: IF_MATCH_HINT, expected_version: versionOfRaw(strapi, uid, raw) },
@@ -946,7 +976,7 @@ async function applyPatch(strapi, ctx, a) {
     if (!(e instanceof BV.BaseVersionConflict)) throw e;
     const fresh = await lockAndRead(strapi, uid, documentId, locale);
     if (versionOfRaw(strapi, uid, fresh) !== versionOfRaw(strapi, uid, raw)) {
-      throw await conflict(strapi, pc, uid, fresh, a.expected_version ?? versionOfRaw(strapi, uid, raw), touched, { detected_by: 'strapi_base_version' });
+      throw await conflict(strapi, pc, uid, fresh, a.expected_version ?? versionOfRaw(strapi, uid, raw), { detected_by: 'strapi_base_version' });
     }
     // The draft is exactly what was verified under this write's own lock, so Strapi's check disagrees with the
     // plugin's reading of updatedAt (precision or format), not with another writer. Reporting a conflict would send
@@ -1081,7 +1111,7 @@ async function applyPublish(strapi, ctx, a) {
   const pc = permissionChecker(strapi, ctx, uid);
   if (pc.cannot.publish(raw)) throw new WsError({ code: 'forbidden', message: `This token cannot publish ${uid} ${documentId}.` });
   if (!M.versionMatches(strapi, uid, a.expected_version, raw)) {
-    throw await conflict(strapi, pc, uid, raw, a.expected_version, undefined, { message: 'The draft changed after you reviewed it. Nothing was published.' }, 'publish');
+    throw await conflict(strapi, pc, uid, raw, a.expected_version, { message: 'The draft changed after you reviewed it. Nothing was published.' }, 'publish');
   }
   const info = {
     tool: a._tool || 'ws_publish', action: 'publish', uid, documentId, locale: locale || null, args: a, dryRun: Boolean(a.dry_run),

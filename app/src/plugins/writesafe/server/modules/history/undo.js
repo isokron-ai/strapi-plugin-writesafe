@@ -147,7 +147,8 @@ async function conflictPayload(strapi, ctx, E, e, raw, fields, extra) {
   if (!raw) {
     return { code: 'version_conflict', message: 'The document no longer exists.', uid: e.uid, documentId: e.documentId, locale: e.locale || null, current: null, changed_since: fields, before, ...extra };
   }
-  const err = await E.conflict(strapi, pc, e.uid, raw, e.va || null, names);
+  // only the fields changed since the receipt (a sync undo may answer for up to 100 documents); `omitted` lists the rest
+  const err = await E.conflict(strapi, pc, e.uid, raw, e.va || null, {}, 'patch', names);
   const p = { ...err.payload, uid: e.uid, changed_since: fields, before, ...extra };
   delete p.retry;
   delete p.expected_version;

@@ -461,14 +461,14 @@ def t_if_match_patch():
     check("set without expected_version, with if_match on that field: applied over another field's change", not e and r.get("ok") is not False and r.get("changed") == ["summary"], r)
     d = draft(doc)
     check("... both changes kept (summary mine, note other writer)", d["summary"] == "mine" and d["note"] == "other writer", d)
-    # the field changed since it was read: version_conflict naming it, current value of that field only
+    # the field changed since it was read: version_conflict naming it in fields_changed, with the whole current state
     e, r = patch(doc, B, set={"summary": "theirs"}, if_match={"summary": "mine"})
     e, r = patch(doc, set={"summary": "stale"}, if_match={"summary": "mine"})
     err = (r or {}).get("error", {}) if isinstance(r, dict) else {}
     check("changed field: version_conflict with fields_changed [summary]", e and code(r) == "version_conflict" and err.get("fields_changed") == ["summary"], r)
     cur = err.get("current") or {}
     cur_data = cur.get("data", cur) if isinstance(cur, dict) else {}
-    check("... current holds that field's value only", isinstance(cur_data, dict) and cur_data.get("summary") == "theirs" and not ({"note", "title", "items", "seo"} & set(cur_data)), err.get("current"))
+    check("... current holds the whole document (that field's new value and the fields it did not name)", isinstance(cur_data, dict) and cur_data.get("summary") == "theirs" and cur_data.get("note") == "other writer" and "title" in cur_data, err.get("current"))
     check("... a retry version, and nothing written", (err.get("retry") or {}).get("expected_version") and draft(doc)["summary"] == "theirs", err)
     check("... the value is under data fields only, never in message or hint", "theirs" not in (err.get("message") or "") and "theirs" not in json.dumps(err.get("retry", {}).get("hint", "")), err)
     # a field written without an entry: precondition_required naming it

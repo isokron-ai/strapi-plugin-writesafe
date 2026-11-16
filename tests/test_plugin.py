@@ -94,6 +94,29 @@ def t_conflict_structure():
 
 
 @T
+def t_conflict_whole_state():
+    # MWS-CONC-6: the conflict carries the document's current state, also another writer's change to a field the refused
+    # write did not touch (an agent sets the note while a colleague edits the summary), with the version of that state
+    doc = common.create_page_mcp("tp-conflict-whole")
+    g = get(doc)
+    before = common.rest_get(RA, doc)
+    common.rest_put(RB, doc, {"summary": (before.get("summary") or "") + " Rain date: Sunday."})
+    err, r, _ = ws("ws_patch", {"uid": UID, "documentId": doc, "expected_version": g["version"], "set": {"note": "checked by agent"}})
+    e = (r or {}).get("error", {})
+    cur = e.get("current", {})
+    check("stale note write refused as version_conflict", err and e.get("code") == "version_conflict", r)
+    check("conflict current carries the colleague's summary edit (a field the write did not touch)",
+          (cur.get("summary") or "").endswith("Rain date: Sunday."), cur)
+    check("conflict current carries the untouched fields too (title, items, their row keys)",
+          cur.get("title") == before.get("title") and len(cur.get("items") or []) == len(before.get("items") or [])
+          and len(e.get("current_rows", {}).get("items") or []) == len(cur.get("items") or []), e)
+    g2 = get(doc)
+    check("current_version is the version ws_get shows for that state", e.get("current_version") == g2["version"],
+          [e.get("current_version"), g2.get("version")])
+    check("nothing written on that conflict", common.rest_get(RA, doc).get("note") == before.get("note"))
+
+
+@T
 def t_row_ops_keep_ids_and_colleague_rows():
     doc = common.create_page_mcp("tp-ops")
     g = get(doc)
@@ -1157,7 +1180,7 @@ def t_v1_boundary_raw_db():
     probe("raw-component", {"component": "shared.item", "id": cid, "set": {"label": "raw-row"}})
     err, r, _ = ws("ws_patch", {"uid": UID, "documentId": doc2, "expected_version": g2["version"], "set": {"summary": "agent"}})
     check("boundary raw component row (page row untouched): stale version refused", err and _err(r).get("code") == "version_conflict", r)
-    check("boundary raw component row: the conflict shows nothing about the untouched field set", "summary" in _err(r).get("current", {}), _err(r))
+    check("boundary raw component row: the conflict carries the current state (the field set included)", "summary" in _err(r).get("current", {}), _err(r))
 
 
 @T

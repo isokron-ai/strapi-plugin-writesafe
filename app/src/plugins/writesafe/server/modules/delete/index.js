@@ -79,7 +79,7 @@ async function applyDelete(strapi, ctx, a) {
     const doc = M.normalize(strapi, uid, raw);
     const expected = a.force ? undefined : (a.all_locales ? a.expected_version[l] : a.expected_version);
     if (expected !== undefined && !M.versionMatches(strapi, uid, expected, raw)) {
-      throw await E.conflict(strapi, pc, uid, raw, expected, undefined, { message: `The document${l ? ` (${l})` : ''} changed after you read it. Nothing was deleted.` }, 'delete');
+      throw await E.conflict(strapi, pc, uid, raw, expected, { message: `The document${l ? ` (${l})` : ''} changed after you read it. Nothing was deleted.` }, 'delete');
     }
     const visible = await pc.sanitizeOutput(raw);
     const hidden = U.hiddenKeys(doc, M.normalize(strapi, uid, visible)).filter((k) => !M.SKIP_KEYS.has(k));

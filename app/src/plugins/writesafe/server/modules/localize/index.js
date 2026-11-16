@@ -158,7 +158,7 @@ async function applyLocalize(strapi, ctx, E, a) {
   }
   if (p.tgt) {
     if (a.expected_version !== undefined && !M.versionMatches(strapi, p.uid, a.expected_version, p.tgtRaw)) {
-      throw await E.conflict(strapi, p.pc, p.uid, p.tgtRaw, a.expected_version, undefined, { message: `The target locale ${p.locale} changed after you read it. Nothing was written.` }, 'localize');
+      throw await E.conflict(strapi, p.pc, p.uid, p.tgtRaw, a.expected_version, { message: `The target locale ${p.locale} changed after you read it. Nothing was written.` }, 'localize');
     }
     if (a.expected_version === undefined && !a.force) {
       throw new E.WsError({

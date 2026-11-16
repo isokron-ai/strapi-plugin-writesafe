@@ -574,18 +574,39 @@ test('if_match: a scalar set without expected_version is accepted when every wri
   } finally { resetModules(); }
 });
 
-test('if_match: a changed field is a version_conflict naming it, with the current value of those fields only', async () => {
+test('if_match: a changed field is a version_conflict naming it in fields_changed, with the whole current state (MWS-CONC-6)', async () => {
   const E = need('../server/engine');
   quiet();
   try {
-    const { strapi, calls } = patchStrapi({ draft: { ...DRAFT, title: 'Changed by a colleague' } });
+    const { strapi, calls } = patchStrapi({ draft: { ...DRAFT, title: 'Changed by a colleague', note: 'also changed' } });
     const e = await errOf(() => E.applyPatch(strapi, ctx, { uid: PAGE, documentId: 'd1', set: { title: 'New', views: 4 }, if_match: { title: 'Old', views: 3 } }));
     assert.strictEqual(e.code, 'version_conflict');
     assert.deepStrictEqual(e.fields_changed, ['title']);
-    assert.deepStrictEqual(Object.keys(e.current).filter((k) => !['documentId', 'locale'].includes(k)), ['title'], 'current shows only the changed fields');
     assert.strictEqual(e.current.title, 'Changed by a colleague');
+    assert.strictEqual(e.current.note, 'also changed', 'current is the whole document, not only the changed fields');
+    assert.strictEqual(e.current.views, 3);
     assert.ok(!/Changed by a colleague/.test(e.message) && !/Changed by a colleague/.test((e.retry && e.retry.hint) || ''), 'content only in data fields');
     assert.match(e.retry.hint, /if_match/);
+    assert.strictEqual(calls.update.length, 0);
+  } finally { resetModules(); }
+});
+
+test('expected_version: a stale patch of `note` carries another writer\'s `title` change in current, and its version (MWS-CONC-6)', async () => {
+  const E = need('../server/engine');
+  const M = need('../server/model');
+  quiet();
+  try {
+    const read = patchStrapi({ draft: DRAFT });
+    const stale = M.versionOf(read.strapi, PAGE, DRAFT);
+    const now = { ...DRAFT, title: 'Changed by a colleague', updatedAt: '2026-01-01T00:00:05.000Z' };
+    const { strapi, calls } = patchStrapi({ draft: now, unreadable: ['secret'] });
+    const e = await errOf(() => E.applyPatch(strapi, ctx, { uid: PAGE, documentId: 'd1', set: { note: 'checked by agent' }, expected_version: stale }));
+    assert.strictEqual(e.code, 'version_conflict');
+    assert.strictEqual(e.current.title, 'Changed by a colleague', 'the other writer\'s change to a field the write did not touch');
+    assert.strictEqual(e.current.note, 'n');
+    assert.ok(!('secret' in e.current) && !JSON.stringify(e).includes('"s"'), 'an unreadable field is left out');
+    assert.strictEqual(e.current_version, M.versionOf(strapi, PAGE, now));
+    assert.strictEqual(e.retry.expected_version, e.current_version);
     assert.strictEqual(calls.update.length, 0);
   } finally { resetModules(); }
 });
@@ -783,5 +804,84 @@ test('ws_bulk / ws_replace: max_chunks passes the handler (not refused as moved)
       // the registry Strapi has no database: the call gets past the argument checks and fails later, not as `invalid`
       if (out.isError) assert.notStrictEqual(out.structuredContent.error.code, 'invalid', JSON.stringify(out.structuredContent.error));
     }
+  } finally { resetModules(); }
+});
+
+// ---------------------------------------------------------------- conflicts and read permission (P26 review, item 1)
+// In Strapi 5.62 sanitizeOutput does not filter fields when the token has no read rule, or a conditional read rule
+// with no field list fails for this document: it returns everything. The mock does the same, and cannot.read is true.
+const noRead = (s, { typeLevel = false } = {}) => {
+  s.pc.cannot.read = (e) => (typeLevel ? true : e !== undefined);
+  s.pc.can.read = (e) => !s.pc.cannot.read(e);
+  s.pc.sanitizeOutput = async (d) => ({ ...d });
+  return s;
+};
+const leaksNothing = (e, secretValues) => {
+  assert.strictEqual(e.code, 'version_conflict');
+  assert.strictEqual(e.readable, false);
+  for (const k of ['current', 'current_rows', 'current_version', 'fields_changed', 'omitted']) assert.ok(!(k in e), `no ${k}`);
+  assert.ok(!('expected_version' in (e.retry || {})), 'no version in retry');
+  assert.match(e.message, /cannot read this document/);
+  for (const v of secretValues) assert.ok(!JSON.stringify(e).includes(v), `content ${v} not in the reply`);
+};
+
+for (const typeLevel of [false, true]) {
+  test(`read permission: a stale ws_patch by a token that cannot read the document gets no content or version (${typeLevel ? 'no read rule' : 'conditional rule fails'})`, async () => {
+    const E = need('../server/engine');
+    const M = need('../server/model');
+    quiet();
+    try {
+      const stale = M.versionOf(patchStrapi({ draft: DRAFT }).strapi, PAGE, DRAFT);
+      const s = noRead(patchStrapi({ draft: { ...DRAFT, title: 'Colleague title', secret: 'HID-01' } }), { typeLevel });
+      const e = await errOf(() => E.applyPatch(s.strapi, ctx, { uid: PAGE, documentId: 'd1', set: { note: 'agent' }, expected_version: stale }));
+      leaksNothing(e, ['Colleague title', 'HID-01']);
+      assert.strictEqual(s.calls.update.length, 0);
+    } finally { resetModules(); }
+  });
+}
+
+test('read permission: a stale ws_publish by a token that cannot read the document gets no content or version', async () => {
+  const E = need('../server/engine');
+  const M = need('../server/model');
+  quiet();
+  try {
+    const stale = M.versionOf(patchStrapi({ draft: DRAFT }).strapi, PAGE, DRAFT);
+    const s = noRead(patchStrapi({ draft: { ...DRAFT, title: 'Colleague title', secret: 'HID-02' } }));
+    const e = await errOf(() => E.applyPublish(s.strapi, ctx, { uid: PAGE, documentId: 'd1', expected_version: stale }));
+    leaksNothing(e, ['Colleague title', 'HID-02']);
+    assert.strictEqual(s.calls.publish.length, 0);
+  } finally { resetModules(); }
+});
+
+test("read permission: a base-version conflict (Strapi's own check) by a token that cannot read the document gets no content or version", async () => {
+  const E = need('../server/engine');
+  const M = need('../server/model');
+  const BV = need('../server/compat/base-version');
+  quiet();
+  const orig = BV.update;
+  try {
+    const s = noRead(patchStrapi({ draft: DRAFT }));
+    const v = M.versionOf(s.strapi, PAGE, DRAFT);
+    // Strapi refuses the write: another writer committed between the plugin's check and Strapi's
+    BV.update = async () => {
+      s.state.draft = { ...s.state.draft, title: 'Colleague title', secret: 'HID-03', updatedAt: '2026-01-01T00:00:09.000Z' };
+      throw new BV.BaseVersionConflict({ details: {} });
+    };
+    const e = await errOf(() => E.applyPatch(s.strapi, ctx, { uid: PAGE, documentId: 'd1', set: { note: 'agent' }, expected_version: v }));
+    leaksNothing(e, ['Colleague title', 'HID-03']);
+    assert.strictEqual(e.detected_by, 'strapi_base_version');
+  } finally { BV.update = orig; resetModules(); }
+});
+
+test('read permission: a stale ws_delete by a token that cannot read the document gets no content or version', async () => {
+  const E = need('../server/engine');
+  const M = need('../server/model');
+  quiet();
+  try {
+    const stale = M.versionOf(patchStrapi({ draft: DRAFT }).strapi, PAGE, DRAFT);
+    const s = noRead(patchStrapi({ draft: { ...DRAFT, title: 'Colleague title', secret: 'HID-04' } }));
+    const D = need('../server/modules/delete');
+    const e = await errOf(() => D.applyDelete(s.strapi, ctx, { uid: PAGE, documentId: 'd1', expected_version: stale }));
+    leaksNothing(e, ['Colleague title', 'HID-04']);
   } finally { resetModules(); }
 });
