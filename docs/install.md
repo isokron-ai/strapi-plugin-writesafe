@@ -3,10 +3,10 @@
 writesafe adds `ws_*` tools to the MCP server built into Strapi 5. It has no server of its own: agents connect to
 Strapi's `/mcp` endpoint with an admin token, as they do for Strapi's own tools.
 
-> Not on npm yet: the package name below is the one it will be published under. Until then, copy
-> `app/src/plugins/writesafe` from this repository into `src/plugins/writesafe` of your app and add
-> `resolve: './src/plugins/writesafe'` next to `enabled: true`. If you turn on the `media` module, also run
-> `npm install file-type@^21.3.4` in your app (the package installs it as its one dependency).
+> The package is on npm as `strapi-plugin-writesafe-mcp` (1.0.0). To run an unreleased commit instead, copy
+> `app/src/plugins/writesafe` from this repository into `src/plugins/writesafe` of your app, add
+> `resolve: './src/plugins/writesafe'` next to `enabled: true`, and if you turn on the `media` module also run
+> `npm install file-type@^21.3.4` in your app (the npm package installs it as its one dependency).
 
 ## Five lines
 
