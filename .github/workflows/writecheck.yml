@@ -1,0 +1,200 @@
+# MWS writecheck: the plugin checked against the MCP Write-Safety Requirements (https://isokron.ai/mws) by IsoKron's
+# GitHub Action isokron-ai/mcp-writecheck-action, on every change, nightly and on demand.
+#
+# The job mirrors the action's own dogfood workflow (dogfood-writesafe.yml in the action repository) and uses its
+# helpers, checked out at the same pinned commit as the action itself: the workspace root is the action repository,
+# this repository is checked out under ws/. The CLI is checked out and built first, before any third-party npm tree is
+# installed or started in the job. The test app is built with this repository's own ci/prepare_app.sh from the packed
+# plugin tarball (the files `npm publish` would ship), Strapi 5.62.0 runs on SQLite on 127.0.0.1 inside the runner, test
+# data is seeded, and every credential is generated in the job and masked.
+#
+#   full  (push to main, nightly, dispatch, pull requests from branches of this repository): plan, catalog and the
+#         full run (mode full, fail-on must) against the job's own throwaway Strapi; the plan hash must match PLAN_HASH.
+#   plan  (pull requests from forks): the plan and its hash only (tools/list; nothing is written).
+#
+# Security: no pull_request_target, so a fork's code runs with a read-only token and no secrets; this workflow uses no
+# secret at all. permissions: contents: read. Third-party actions are pinned by full commit SHA.
+#
+# Updating the pins:
+#   - MWSA_REF and every `uses: isokron-ai/mcp-writecheck-action@...` line names the same commit (a step checks
+#     this): `git ls-remote https://github.com/isokron-ai/mcp-writecheck-action refs/heads/main`. That commit also
+#     decides the CLI (CLI_DEFAULT_REF in its contract.mjs) and the manifest (dogfood/writesafe/writecheck.yaml).
+#   - PLAN_HASH is the hash of the plan, which covers the manifest, the CLI's checks and the server's whole tools/list
+#     answer (names, descriptions, schemas). It changes when the action/CLI pin changes, and when a change to this
+#     plugin changes a tool's name, description or schema, or the set of tools. The job then fails at "Compare the plan
+#     hash" and names the new hash. Read the new plan in the job summary of the Plan step; if it is right, put the new
+#     hash in PLAN_HASH in the same pull request. To try a hash without editing the file, dispatch this workflow with
+#     the plan-hash input.
+
+name: MWS writecheck
+
+on:
+  # Same paths as ci.yml: skip markdown-only and results-only changes, except the plugin README (it ships in the package).
+  push:
+    branches: [main]
+    paths: ['**', '!**.md', '!tests/results/**', 'app/src/plugins/writesafe/README.md']
+  pull_request:
+    paths: ['**', '!**.md', '!tests/results/**', 'app/src/plugins/writesafe/README.md']
+  schedule:
+    - cron: '47 2 * * *'
+  workflow_dispatch:
+    inputs:
+      plan-hash:
+        description: Accept this plan hash instead of PLAN_HASH for this run (16 hex characters), after reading the plan. Empty for the pinned one.
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: writecheck-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # isokron-ai/mcp-writecheck-action main (keep equal to the `uses:` lines below).
+  MWSA_REF: 300166b17b861c3da08987956e2db18452b8c455
+  # The accepted plan for the manifest and CLI at MWSA_REF and this plugin's tools (see "Updating the pins" above).
+  PLAN_HASH: ffe01fe92802bad1
+  # check-plan-hash.sh reads PLAN_HASHES as space-separated <job>=<hash> pairs; empty (push, schedule, pull_request,
+  # dispatch without input) means PLAN_HASH.
+  PLAN_HASHES: ${{ inputs.plan-hash && format('full={0} plan={0}', inputs.plan-hash) || '' }}
+  STRAPI_VERSION: 5.62.0
+  STRAPI_TELEMETRY_DISABLED: 'true'
+  DO_NOT_TRACK: '1'
+
+jobs:
+  # Pull requests from forks: the plan only.
+  plan:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out mcp-writecheck-action (helpers and manifest)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-writecheck-action
+          ref: ${{ env.MWSA_REF }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # The CLI first, before any third-party code runs in this job (public repository, no token).
+      - id: cliref
+        name: Choose the CLI commit (the action's default)
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
+      - name: Check out writesafe (this repository, the pull request's merge commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ws
+          persist-credentials: false
+      - name: Check that the action pins agree
+        run: |
+          refs=$(grep -oE '^[[:space:]]*(- )?uses:[[:space:]]+isokron-ai/mcp-writecheck-action@[^[:space:]#]+' ws/.github/workflows/writecheck.yml | sed 's/.*@//' | sort -u)
+          [ "$refs" = "$MWSA_REF" ] || { echo "::error::every uses: isokron-ai/mcp-writecheck-action line must name MWSA_REF ($MWSA_REF); found: ${refs//$'\n'/ }"; exit 1; }
+      - name: Build the test app
+        run: dogfood/writesafe/strapi.sh prepare
+      - name: Start Strapi and seed test data
+        run: dogfood/writesafe/strapi.sh start
+      - id: plan
+        name: Plan
+        uses: isokron-ai/mcp-writecheck-action@300166b17b861c3da08987956e2db18452b8c455 # main
+        with:
+          manifest: dogfood/writesafe/writecheck.yaml
+          mode: plan
+          artifact-name: writecheck-plan
+          cli-path: ${{ env.MWSC_CLI_PATH }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" plan
+      - name: Stop Strapi
+        if: always()
+        run: dogfood/writesafe/strapi.sh stop
+
+  # Push to main, nightly, dispatch, and pull requests from branches of this repository. Everything the full run writes
+  # goes to the job's own throwaway Strapi (SQLite in the runner, test data only).
+  full:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out mcp-writecheck-action (helpers and manifest)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-writecheck-action
+          ref: ${{ env.MWSA_REF }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # The CLI first, before any third-party code runs in this job (public repository, no token).
+      - id: cliref
+        name: Choose the CLI commit (the action's default)
+        run: dogfood/cli-ref.sh
+      - name: Check out mcp-writecheck
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-write-safety
+          ref: ${{ steps.cliref.outputs.ref }}
+          path: mws-cli
+          sparse-checkout: packages/writecheck
+          persist-credentials: false
+      - name: Build mcp-writecheck
+        run: dogfood/build-cli.sh
+      - name: Check out writesafe (this repository, the commit under test)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ws
+          persist-credentials: false
+      - name: Check that the action pins agree
+        run: |
+          refs=$(grep -oE '^[[:space:]]*(- )?uses:[[:space:]]+isokron-ai/mcp-writecheck-action@[^[:space:]#]+' ws/.github/workflows/writecheck.yml | sed 's/.*@//' | sort -u)
+          [ "$refs" = "$MWSA_REF" ] || { echo "::error::every uses: isokron-ai/mcp-writecheck-action line must name MWSA_REF ($MWSA_REF); found: ${refs//$'\n'/ }"; exit 1; }
+      - name: Build the test app
+        run: dogfood/writesafe/strapi.sh prepare
+      - name: Start Strapi and seed test data
+        run: dogfood/writesafe/strapi.sh start
+      - id: plan
+        name: Plan
+        uses: isokron-ai/mcp-writecheck-action@300166b17b861c3da08987956e2db18452b8c455 # main
+        with:
+          manifest: dogfood/writesafe/writecheck.yaml
+          mode: plan
+          artifact-name: writecheck-full-plan
+          cli-path: ${{ env.MWSC_CLI_PATH }}
+      - name: Compare the plan hash with the accepted one
+        env:
+          SEEN: ${{ steps.plan.outputs.plan-hash }}
+        run: dogfood/check-plan-hash.sh "$PLAN_HASH" "$SEEN" full
+      - name: Catalog
+        uses: isokron-ai/mcp-writecheck-action@300166b17b861c3da08987956e2db18452b8c455 # main
+        with:
+          manifest: dogfood/writesafe/writecheck.yaml
+          mode: catalog
+          fail-on: must
+          artifact-name: writecheck-catalog
+          cli-path: ${{ env.MWSC_CLI_PATH }}
+      - name: Full run
+        uses: isokron-ai/mcp-writecheck-action@300166b17b861c3da08987956e2db18452b8c455 # main
+        with:
+          manifest: dogfood/writesafe/writecheck.yaml
+          mode: full
+          fail-on: must
+          confirm-target: writesafe-dogfood-strapi-5.62.0
+          plan-hash: ${{ env.ACCEPTED_PLAN_HASH }}
+          artifact-name: writecheck-full
+          cli-path: ${{ env.MWSC_CLI_PATH }}
+      - name: Stop Strapi
+        if: always()
+        run: dogfood/writesafe/strapi.sh stop

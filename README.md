@@ -1,5 +1,9 @@
 # writesafe for Strapi 5
 
+[![MWS writecheck](https://github.com/isokron-ai/strapi-plugin-writesafe/actions/workflows/writecheck.yml/badge.svg?branch=main)](https://github.com/isokron-ai/strapi-plugin-writesafe/actions/workflows/writecheck.yml)
+
+Checked against [MWS](https://isokron.ai/mws), the MCP Write-Safety Requirements, on every code change and nightly.
+
 > **Status: 1.0.0**, on npm as [`strapi-plugin-writesafe-mcp`](https://www.npmjs.com/package/strapi-plugin-writesafe-mcp)
 > and listed on the [Strapi Marketplace](https://community.strapi.io/marketplace/write-safe-mcp). Tested on every Strapi 5
 > minor from 5.47 to 5.62 with SQLite, Postgres 16 and MySQL 8.4 (48 of 48 cells). Free and MIT-licensed.
@@ -27,7 +31,7 @@ the changes in its [`CHANGELOG.md`](app/src/plugins/writesafe/CHANGELOG.md) and 
 | `app/src/plugins/probe/` | A test-only plugin for boundary tests; off unless `WRITESAFE_TEST_PROBE=true` |
 | `tests/`, `spike/`, `scripts/` | The functional suites, the MCP/REST client helpers they use, and their token and fixture setup |
 | `ci/` | The test matrix: per-version app preparation, the suite runner, the package check, the matrix report |
-| `.github/workflows/` | CI on every push and pull request, the full version grid (nightly, tags, on demand), a nightly canary against new Strapi releases, and a manual-only npm publish workflow (not used yet) |
+| `.github/workflows/` | CI on every push and pull request, the full version grid (nightly, tags, on demand), a nightly canary against new Strapi releases, the MWS writecheck (`writecheck.yml`: every code change, nightly), and the manual npm publish workflow (Trusted Publishing) |
 
 ## Running the tests
 
