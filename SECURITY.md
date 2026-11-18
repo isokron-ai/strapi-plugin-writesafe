@@ -2,8 +2,8 @@
 
 ## Status
 
-writesafe is pre-release software under active hardening. There is no supported release yet, and no response
-times are promised. We still want to hear about security problems and will look at every report.
+The supported release is the latest 1.x on npm (`strapi-plugin-writesafe-mcp`). No response times are promised; we
+look at every report.
 
 The plugin is tested on the Strapi 5 versions in the CI matrix (`ci/strapi-versions.json`) on SQLite, Postgres and
 MySQL.

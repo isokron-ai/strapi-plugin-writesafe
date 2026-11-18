@@ -1,8 +1,8 @@
 # writesafe for Strapi 5
 
-> **Pre-release (1.0.0-rc), under active hardening.** Not yet published to npm. Interfaces, error codes and receipt
-> shapes may still change, and there are no support commitments yet. Please do not run it against content you cannot
-> afford to lose.
+> **Status: 1.0.0**, on npm as [`strapi-plugin-writesafe-mcp`](https://www.npmjs.com/package/strapi-plugin-writesafe-mcp)
+> and listed on the [Strapi Marketplace](https://community.strapi.io/marketplace/write-safe-mcp). Tested on every Strapi 5
+> minor from 5.47 to 5.62 with SQLite, Postgres 16 and MySQL 8.4 (48 of 48 cells). Free and MIT-licensed.
 
 writesafe adds safe-write tools to the MCP server built into Strapi 5. It runs inside Strapi's own `/mcp` endpoint
 through the plugin API (`strapi.ai.mcp.registerTool`), next to Strapi's built-in tools, with the same admin tokens and
